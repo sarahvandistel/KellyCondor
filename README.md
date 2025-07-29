@@ -1,262 +1,240 @@
-# KellyCondor
+# KellyCondor 🚀
 
-[![Build Status](https://img.shields.io/github/workflow/status/YourUser/KellyCondor/Kelly%20Sizer%20Regression%20Test)](https://github.com/YourUser/KellyCondor/actions)
-[![PyPI version](https://img.shields.io/pypi/v/kellycondor)](https://pypi.org/project/kellycondor)
+A sophisticated options trading system that implements the Kelly Criterion for iron condor strategies with live IBKR integration, real-time monitoring, and comprehensive backtesting capabilities.
 
-A live‑paper‑ready SPX 0DTE iron‑condor engine using a Kelly‐criterion‑based sizer that dynamically adapts to IV Rank and skew.  
-Supports historical replay, CI regression testing, Redis‐backed persistence, and a Dash dashboard.
+## 🌟 Features
 
----
+### 📊 **Live Paper Trading**
+- **Interactive Brokers Integration**: Real-time connection to TWS/IB Gateway
+- **Iron Condor Strategy**: Automated strike selection and position sizing
+- **Kelly Criterion**: Dynamic position sizing based on IV rank and volatility skew
+- **Redis Trade Tracking**: Complete trade history and position monitoring
 
-## 📦 Installation
+### 📈 **Real-time Dashboard**
+- **Live Performance Metrics**: Equity curves, PnL distributions, trade history
+- **Interactive Charts**: Plotly-powered visualizations
+- **Real-time Updates**: Web-based dashboard at `http://localhost:8050`
 
-```bash
-git clone https://github.com/YourUser/KellyCondor.git
-cd KellyCondor
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-pip install -r requirements.txt
-```
+### 🔄 **Backtesting Engine**
+- **Historical Data**: Databento integration for market data
+- **Strategy Validation**: Comprehensive backtesting with performance metrics
+- **Risk Analysis**: Drawdown analysis and statistical validation
 
-### Using Mamba Environment
-
-If you're using Mamba with the `sarah313` environment:
-
-```bash
-mamba activate sarah313
-pip install -e .
-pip install -r requirements.txt
-```
+### 🛠️ **Monitoring & Management**
+- **Trade Monitor**: Real-time trade tracking and status updates
+- **System Status**: Process monitoring and health checks
+- **Redis Integration**: Persistent trade data and position tracking
 
 ## 🚀 Quick Start
 
-### Running Tests
-
+### Prerequisites
 ```bash
-# Run all tests
-pytest tests/ -v
+# Install Redis
+sudo apt install redis-server
+sudo systemctl start redis-server
 
-# Run with coverage
-pytest tests/ -v --cov=kellycondor --cov-report=html
+# Install Interactive Brokers TWS (Paper Trading)
+# Download from: https://www.interactivebrokers.com/en/trading/tws.php
 ```
 
-### Running the Dashboard
-
+### Installation
 ```bash
-# Start the Dash dashboard
-python dashboard/app.py
+# Clone the repository
+git clone https://github.com/yourusername/KellyCondor.git
+cd KellyCondor
+
+# Create and activate conda environment
+mamba create -n sarah313 python=3.13
+mamba activate sarah313
+
+# Install the package
+pip install -e .
 ```
 
-Then open your browser to `http://localhost:8050`
-
-### Running Historical Replay
-
+### Live Paper Trading
 ```bash
-# Using the CLI script
-./scripts/run_replay.sh --account-size 100000
+# Start TWS in paper trading mode (port 7497)
+# Enable API connections in TWS settings
 
-# Or directly with Python
-python -m kellycondor.replay --account-size 100000
-```
-
-### 📈 Live Paper Trading
-
-KellyCondor supports live paper trading through Interactive Brokers. Here's how to get started:
-
-#### Prerequisites
-
-1. **Install TWS or IB Gateway**
-   - Download from [Interactive Brokers](https://www.interactivebrokers.com/en/trading/tws.php)
-   - Enable API connections in TWS settings
-   - Set port to 7496 for paper trading
-
-2. **Configure API Permissions**
-   - In TWS: File → Global Configuration → API → Settings
-   - Enable "Enable ActiveX and Socket Clients"
-   - Add your IP to "Trusted IPs" or check "Allow connections from localhost"
-   - Set Socket Port to 7497 for paper trading
-
-#### Running Paper Trading
-
-```bash
-# Basic paper trading
-kelly-live --paper
-
-# Custom configuration
-kelly-live --paper --host 127.0.0.1 --port 7497 --account-size 50000
-
-# Simulation mode (no IBKR connection)
-kelly-live --simulate
-
-# Verbose logging
+# Start live trading
 kelly-live --paper --verbose
+
+# Monitor trades
+python monitor_trades.py
+
+# Check system status
+python simple_trade_monitor.py
 ```
 
-#### Paper Trading Workflow
+### Dashboard
+```bash
+# Start the dashboard
+python dashboard/app.py
 
-1. **Launch TWS in Paper Mode**
-   ```bash
-   # TWS should be running on port 7497 for paper trading
-   # Make sure API connections are enabled
-   ```
-
-2. **Start KellyCondor**
-   ```bash
-   kelly-live --paper --verbose
-   ```
-
-3. **Monitor in Dashboard**
-   ```bash
-   # In another terminal
-   python dashboard/app.py
-   # Open http://localhost:8050
-   ```
-
-4. **Check Order Status**
-   - Orders will be logged to console
-   - Dashboard shows real-time updates
-   - TWS shows order status and fills
-
-#### Configuration Options
-
-- `--paper`: Enable paper trading mode
-- `--simulate`: Run in simulation mode (no orders)
-- `--host`: IBKR host (default: 127.0.0.1)
-- `--port`: IBKR port (7497=paper, 7496=live)
-- `--account-size`: Account size for Kelly sizing
-- `--verbose`: Enable detailed logging
-- `--dry-run`: Test without submitting orders
+# Access at: http://localhost:8050
+```
 
 ## 📁 Project Structure
 
 ```
 KellyCondor/
-├── .github/                   # CI configs
-│   └── workflows/
-│       └── regression.yml
-├── src/
-│   └── kellycondor/           # your package
-│       ├── __init__.py
-│       ├── processor.py
-│       ├── sizer.py
-│       └── replay.py
-├── tests/                     # pytest suite
-│   ├── test_processor.py
-│   └── test_sizer.py
-├── dashboard/                 # Dash/Plotly front end
-│   └── app.py
-├── scripts/                   # helper CLI scripts
-│   └── run_replay.sh
-├── requirements.txt
-├── setup.py                   # editable install
-├── README.md
-└── .gitignore
+├── src/kellycondor/
+│   ├── __init__.py          # Package initialization
+│   ├── processor.py         # Market data processing
+│   ├── sizer.py            # Kelly criterion sizing
+│   ├── execution.py        # Live IBKR trading
+│   ├── replay.py           # Backtesting engine
+│   └── cli.py              # Command line interface
+├── dashboard/
+│   └── app.py              # Dash web dashboard
+├── tests/
+│   ├── test_processor.py   # Unit tests
+│   ├── test_sizer.py       # Unit tests
+│   └── test_execution.py   # Unit tests
+├── scripts/
+│   └── kelly_replay.py     # Backtesting script
+├── monitor_trades.py        # Trade monitoring
+├── simple_trade_monitor.py  # System status
+├── force_trade.py          # Test trade submission
+└── README.md               # This file
 ```
 
-## 🔧 Core Components
+## 🔧 Configuration
 
-### Processor (`src/kellycondor/processor.py`)
-- Processes SPX options data and market information
-- Calculates IV Rank from historical implied volatility
-- Computes volatility skew metrics
+### IBKR Connection
+- **Paper Trading Port**: 7497
+- **Live Trading Port**: 7496
+- **Host**: 127.0.0.1
+- **Client ID**: 1
 
-### KellySizer (`src/kellycondor/sizer.py`)
-- Implements Kelly criterion-based position sizing
-- Dynamically adjusts sizing based on IV Rank and skew
-- Provides conservative position sizing for iron condors
+### Trading Parameters
+- **IV Rank Threshold**: > 0.5
+- **Skew Threshold**: < 0.1
+- **Default Expiry**: 20241220
+- **Strike Selection**: ±50 from current price
+- **Spread Width**: 25 points
 
-### ReplayEngine (`src/kellycondor/replay.py`)
-- Historical backtesting engine
-- Performance metrics calculation
-- Trade simulation and analysis
+## 📊 Monitoring Tools
 
-## 📊 Dashboard Features
+### Trade Monitor
+```bash
+python monitor_trades.py
+```
+Shows:
+- Current open positions
+- Trade history summary
+- PnL statistics
+- Recent trades
 
-The Dash dashboard provides:
-- Real-time equity curve visualization
-- Trade PnL distribution analysis
-- Kelly sizing metrics display
-- Recent trades table
-- Performance statistics
+### System Status
+```bash
+python simple_trade_monitor.py
+```
+Shows:
+- Trading process status
+- Dashboard status
+- Redis connection
+- TWS connection
+
+### Force Trade (Testing)
+```bash
+python force_trade.py
+```
+Forces a trade submission for testing Redis logging.
 
 ## 🧪 Testing
 
-The project includes comprehensive unit tests:
-
+### Unit Tests
 ```bash
-# Run all tests
 pytest tests/
-
-# Run specific test file
-pytest tests/test_sizer.py
-
-# Run with verbose output
-pytest tests/ -v
 ```
 
-## 🔄 CI/CD
+### Integration Tests
+```bash
+# Test IBKR connection
+kelly-live --simulate --verbose
 
-GitHub Actions workflow includes:
-- Multi-Python version testing (3.11, 3.12)
-- Code linting with flake8, black, and isort
-- Regression testing
-- Coverage reporting
-
-## 📈 Usage Examples
-
-### Basic Kelly Sizing
-
-```python
-from kellycondor import KellySizer
-
-sizer = KellySizer(max_kelly_fraction=0.25)
-result = sizer.size_position(
-    iv_rank=0.65,
-    skew=0.12,
-    account_size=100000
-)
-print(f"Position size: ${result['position_size']:,.2f}")
+# Test trade submission
+python force_trade.py
 ```
 
-### Historical Replay
+## 📈 Strategy Details
 
-```python
-from kellycondor import ReplayEngine
+### Kelly Criterion Implementation
+The system uses the Kelly Criterion for position sizing:
+- **Win Rate**: Based on historical IV rank buckets
+- **Risk Management**: Maximum position size limits
+- **Dynamic Sizing**: Adjusts based on current market conditions
 
-engine = ReplayEngine(account_size=100000)
-results = engine.run_replay(historical_data)
-metrics = engine.calculate_performance_metrics(results['trades'])
-```
+### Iron Condor Strategy
+- **Call Spread**: Sell call + Buy higher call
+- **Put Spread**: Sell put + Buy lower put
+- **Strike Selection**: Based on current SPX price
+- **Expiry**: Monthly options (typically 30-45 DTE)
+
+### Market Data Processing
+- **IV Rank**: Historical percentile of current IV
+- **Volatility Skew**: Difference between call and put IV
+- **Real-time Updates**: Continuous market data processing
+
+## 🔒 Security & Risk
+
+### Paper Trading Only
+⚠️ **This system is designed for paper trading only.**
+- No real money trading
+- Educational and research purposes
+- Always test thoroughly before live trading
+
+### Risk Management
+- Position size limits
+- Maximum drawdown controls
+- Stop-loss mechanisms
+- Diversification across expiries
 
 ## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+2. Create a feature branch
+3. Make your changes
+4. Add tests
+5. Submit a pull request
 
 ## 📝 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is for educational and research purposes. Use at your own risk.
 
-## ⚠️ Disclaimer
+## 🆘 Troubleshooting
 
-This software is for educational and research purposes only. It is not intended for actual trading. Use at your own risk. The authors are not responsible for any financial losses incurred through the use of this software.
+### Common Issues
 
-## 🔗 Dependencies
+**TWS Connection Failed**
+```bash
+# Check TWS is running on correct port
+# Paper trading: 7497
+# Live trading: 7496
+```
 
-- **numpy**: Numerical computing
-- **pandas**: Data manipulation and analysis
-- **backtrader**: Backtesting framework
-- **redis**: Data persistence
-- **databento**: Market data provider
-- **ibapi**: Interactive Brokers API
-- **dash**: Web dashboard framework
-- **plotly**: Interactive plotting
-- **pytest**: Testing framework
+**Redis Connection Error**
+```bash
+# Start Redis server
+sudo systemctl start redis-server
+```
+
+**Dashboard Not Loading**
+```bash
+# Check if dashboard is running
+python simple_trade_monitor.py
+```
+
+## 📞 Support
+
+For questions or issues:
+1. Check the troubleshooting section
+2. Review the logs
+3. Open an issue on GitHub
 
 ---
 
-**KellyCondor** - Where Kelly meets Condor for optimal SPX iron condor sizing. 
+**Happy Trading! 📈**
+
+*Remember: This is for paper trading and educational purposes only.* 

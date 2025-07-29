@@ -155,33 +155,47 @@ cython_debug/
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be added to the global gitignore or merged into this project gitignore.  For a PyCharm
-#  project, uncomment the following line:
-#.idea/
+#  project, it is recommended to include the following files:
+#  .idea/
+#  *.iml
+#  *.ipr
+#  *.iws
 
 # KellyCondor specific
-replay_results/
-regression_results/
+# Trading data and logs
 *.log
+trading.log
 *.csv
 *.json
-*.pickle
-*.pkl
 
-# Data files
-data/
-*.h5
-*.hdf5
+# API keys and sensitive data
+.env
+config.ini
+secrets.json
+api_keys.txt
 
-# Redis dump
+# Redis dump files
 dump.rdb
 
-# Interactive Brokers
-ibapi_logs/
-ibapi_data/
+# TWS/IBKR files
+*.ibkr
+*.tws
 
-# Backtrader
-backtrader_data/
-backtrader_results/
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
 
-# Dash cache
-.dash_cache/ 
+# IDE files
+.vscode/
+.idea/
+*.sublime-*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup 
