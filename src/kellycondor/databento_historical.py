@@ -7,13 +7,16 @@ the KellyCondor strategy with real market data.
 
 import os
 import logging
+import operator
+import pathlib
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 
 import pandas as pd
 import numpy as np
-from databento import Historical, Symbology
+import databento as db
 
 logger = logging.getLogger(__name__)
 
@@ -71,22 +74,15 @@ class DatabentoHistoricalData:
         if not self.api_key:
             raise ValueError("Databento API key required. Set DATABENTO_API_KEY environment variable.")
         
-        self.client = Historical(self.api_key)
+        self.client = db.Historical(self.api_key)
         logger.info("Initialized Databento historical data client")
     
     def get_symbol_mapping(self, symbols: List[str], dataset: str = "GLBX.MDP3") -> Dict[str, str]:
         """Get symbol mapping for given symbols."""
         try:
-            symbology = Symbology(
-                dataset=dataset,
-                symbols=symbols,
-                stype_in="symbol",
-                stype_out="symbol",
-                start_date=datetime.now() - timedelta(days=30),
-                end_date=datetime.now()
-            )
-            
-            mapping = self.client.symbology(symbology)
+            # For now, return a simple mapping since symbology might not be available
+            # In practice, you'd use the actual symbology API
+            mapping = {symbol: symbol for symbol in symbols}
             logger.info(f"Retrieved symbol mapping for {len(symbols)} symbols")
             return mapping
         except Exception as e:
@@ -94,34 +90,60 @@ class DatabentoHistoricalData:
             return {}
     
     def fetch_trade_data(self, config: HistoricalDataConfig) -> pd.DataFrame:
-        """Fetch historical trade data."""
+        """Fetch historical trade data using batch API."""
         try:
             logger.info(f"Fetching trade data for {config.symbol} from {config.start_date} to {config.end_date}")
             
-            # Get symbol mapping
-            mapping = self.get_symbol_mapping([config.symbol], config.dataset)
-            if not mapping:
-                logger.warning(f"No symbol mapping found for {config.symbol}")
-                return pd.DataFrame()
-            
-            # Fetch trade data
-            data = self.client.timeseries.get_range(
+            # Submit batch job
+            new_job = self.client.batch.submit_job(
                 dataset=config.dataset,
-                symbols=[config.symbol],
-                stype_in=config.stype_in,
-                stype_out=config.stype_out,
-                start=config.start_date,
-                end=config.end_date,
-                max_records=config.max_records
+                start=config.start_date.strftime("%Y-%m-%dT%H:%M:%S"),
+                end=config.end_date.strftime("%Y-%m-%dT%H:%M:%S"),
+                symbols=config.symbol,
+                schema="trades",
+                split_duration="day",
+                stype_in="parent",
             )
             
-            if data.empty:
+            # Get job ID
+            new_job_id: str = new_job["id"]
+            logger.info(f"Submitted batch job with ID: {new_job_id}")
+            
+            # Wait for job to complete
+            logger.info("Waiting for batch job to complete...")
+            while True:
+                done_jobs = list(map(operator.itemgetter("id"), self.client.batch.list_jobs("done")))
+                if new_job_id in done_jobs:
+                    break
+                time.sleep(1.0)
+            
+            logger.info("Batch job completed, downloading files...")
+            
+            # Download files
+            downloaded_files = self.client.batch.download(
+                job_id=new_job_id,
+                output_dir=pathlib.Path.cwd(),
+            )
+            
+            # Load data from files
+            all_data = []
+            for file in sorted(downloaded_files):
+                if file.name.endswith(".dbn.zst"):
+                    data = db.DBNStore.from_file(file)
+                    df = data.to_df()
+                    all_data.append(df)
+                    logger.info(f"{file.name} contains {len(df):,d} records")
+            
+            if not all_data:
                 logger.warning(f"No trade data found for {config.symbol}")
                 return pd.DataFrame()
             
+            # Combine all data
+            combined_df = pd.concat(all_data, ignore_index=True)
+            
             # Process and clean data
-            df = self._process_trade_data(data)
-            logger.info(f"Retrieved {len(df)} trade records for {config.symbol}")
+            df = self._process_trade_data(combined_df)
+            logger.info(f"Retrieved {len(df)} total trade records for {config.symbol}")
             
             return df
             
@@ -130,39 +152,63 @@ class DatabentoHistoricalData:
             return pd.DataFrame()
     
     def fetch_bar_data(self, config: HistoricalDataConfig) -> pd.DataFrame:
-        """Fetch historical bar data (OHLCV)."""
+        """Fetch historical bar data (OHLCV) using batch API."""
         try:
             logger.info(f"Fetching bar data for {config.symbol} from {config.start_date} to {config.end_date}")
             
             if not config.interval:
                 raise ValueError("Interval required for bar data")
             
-            # Get symbol mapping
-            mapping = self.get_symbol_mapping([config.symbol], config.dataset)
-            if not mapping:
-                logger.warning(f"No symbol mapping found for {config.symbol}")
-                return pd.DataFrame()
-            
-            # Fetch bar data
-            data = self.client.timeseries.get_range(
+            # Submit batch job for bars
+            new_job = self.client.batch.submit_job(
                 dataset=config.dataset,
-                symbols=[config.symbol],
-                stype_in=config.stype_in,
-                stype_out=config.stype_out,
-                start=config.start_date,
-                end=config.end_date,
-                interval=config.interval,
-                price_type=config.price_type,
-                max_records=config.max_records
+                start=config.start_date.strftime("%Y-%m-%dT%H:%M:%S"),
+                end=config.end_date.strftime("%Y-%m-%dT%H:%M:%S"),
+                symbols=config.symbol,
+                schema="ohlcv",
+                split_duration="day",
+                stype_in="parent",
             )
             
-            if data.empty:
+            # Get job ID
+            new_job_id: str = new_job["id"]
+            logger.info(f"Submitted batch job with ID: {new_job_id}")
+            
+            # Wait for job to complete
+            logger.info("Waiting for batch job to complete...")
+            while True:
+                done_jobs = list(map(operator.itemgetter("id"), self.client.batch.list_jobs("done")))
+                if new_job_id in done_jobs:
+                    break
+                time.sleep(1.0)
+            
+            logger.info("Batch job completed, downloading files...")
+            
+            # Download files
+            downloaded_files = self.client.batch.download(
+                job_id=new_job_id,
+                output_dir=pathlib.Path.cwd(),
+            )
+            
+            # Load data from files
+            all_data = []
+            for file in sorted(downloaded_files):
+                if file.name.endswith(".dbn.zst"):
+                    data = db.DBNStore.from_file(file)
+                    df = data.to_df()
+                    all_data.append(df)
+                    logger.info(f"{file.name} contains {len(df):,d} records")
+            
+            if not all_data:
                 logger.warning(f"No bar data found for {config.symbol}")
                 return pd.DataFrame()
             
+            # Combine all data
+            combined_df = pd.concat(all_data, ignore_index=True)
+            
             # Process and clean data
-            df = self._process_bar_data(data)
-            logger.info(f"Retrieved {len(df)} bar records for {config.symbol}")
+            df = self._process_bar_data(combined_df)
+            logger.info(f"Retrieved {len(df)} total bar records for {config.symbol}")
             
             return df
             
@@ -171,29 +217,38 @@ class DatabentoHistoricalData:
             return pd.DataFrame()
     
     def _process_trade_data(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Process and clean trade data."""
+        """Process and clean trade data from Databento."""
         if data.empty:
             return data
-        
-        # Ensure required columns exist
-        required_cols = ['ts_event', 'symbol', 'price', 'size']
-        missing_cols = [col for col in required_cols if col not in data.columns]
-        if missing_cols:
-            logger.warning(f"Missing columns in trade data: {missing_cols}")
-            return pd.DataFrame()
         
         # Clean and process data
         df = data.copy()
         
-        # Convert timestamp
+        # Convert timestamp (Databento uses nanoseconds)
         if 'ts_event' in df.columns:
             df['timestamp'] = pd.to_datetime(df['ts_event'], unit='ns')
         elif 'ts' in df.columns:
             df['timestamp'] = pd.to_datetime(df['ts'], unit='ns')
         
-        # Ensure numeric types
-        df['price'] = pd.to_numeric(df['price'], errors='coerce')
-        df['size'] = pd.to_numeric(df['size'], errors='coerce')
+        # Handle different column names for price and size
+        price_col = None
+        size_col = None
+        
+        for col in df.columns:
+            if 'price' in col.lower():
+                price_col = col
+            elif 'size' in col.lower() or 'quantity' in col.lower():
+                size_col = col
+        
+        if price_col:
+            df['price'] = pd.to_numeric(df[price_col], errors='coerce')
+        if size_col:
+            df['size'] = pd.to_numeric(df[size_col], errors='coerce')
+        
+        # Ensure we have required columns
+        if 'price' not in df.columns or 'size' not in df.columns:
+            logger.warning("Missing price or size columns in trade data")
+            return pd.DataFrame()
         
         # Remove invalid data
         df = df.dropna(subset=['price', 'size', 'timestamp'])
@@ -206,33 +261,47 @@ class DatabentoHistoricalData:
         return df
     
     def _process_bar_data(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Process and clean bar data."""
+        """Process and clean bar data from Databento."""
         if data.empty:
             return data
-        
-        # Ensure required columns exist
-        required_cols = ['ts_event', 'symbol', 'open', 'high', 'low', 'close', 'volume']
-        missing_cols = [col for col in required_cols if col not in data.columns]
-        if missing_cols:
-            logger.warning(f"Missing columns in bar data: {missing_cols}")
-            return pd.DataFrame()
         
         # Clean and process data
         df = data.copy()
         
-        # Convert timestamp
+        # Convert timestamp (Databento uses nanoseconds)
         if 'ts_event' in df.columns:
             df['timestamp'] = pd.to_datetime(df['ts_event'], unit='ns')
         elif 'ts' in df.columns:
             df['timestamp'] = pd.to_datetime(df['ts'], unit='ns')
         
-        # Ensure numeric types
-        price_cols = ['open', 'high', 'low', 'close']
-        for col in price_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+        # Handle different column names for OHLCV
+        ohlcv_mapping = {
+            'open': ['open', 'o'],
+            'high': ['high', 'h'],
+            'low': ['low', 'l'],
+            'close': ['close', 'c'],
+            'volume': ['volume', 'vol', 'v']
+        }
+        
+        for target_col, possible_cols in ohlcv_mapping.items():
+            found_col = None
+            for col in df.columns:
+                if col.lower() in possible_cols:
+                    found_col = col
+                    break
+            
+            if found_col:
+                df[target_col] = pd.to_numeric(df[found_col], errors='coerce')
+        
+        # Ensure we have required columns
+        required_cols = ['open', 'high', 'low', 'close', 'volume']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            logger.warning(f"Missing columns in bar data: {missing_cols}")
+            return pd.DataFrame()
         
         # Remove invalid data
+        price_cols = ['open', 'high', 'low', 'close']
         df = df.dropna(subset=price_cols + ['volume', 'timestamp'])
         df = df[df[price_cols].gt(0).all(axis=1)]
         df = df[df['volume'] > 0]
@@ -244,7 +313,7 @@ class DatabentoHistoricalData:
     
     def get_option_chain_data(self, underlying: str, expiry_date: datetime, 
                              dataset: str = "OPRA.PILLAR") -> pd.DataFrame:
-        """Fetch option chain data for a specific expiry."""
+        """Fetch option chain data for a specific expiry using batch API."""
         try:
             logger.info(f"Fetching option chain for {underlying} expiring {expiry_date}")
             
@@ -257,23 +326,55 @@ class DatabentoHistoricalData:
                 logger.warning(f"No option symbols found for {underlying}")
                 return pd.DataFrame()
             
-            # Fetch option data
-            data = self.client.timeseries.get_range(
+            # Submit batch job for options
+            new_job = self.client.batch.submit_job(
                 dataset=dataset,
-                symbols=symbols,
-                stype_in="symbol",
-                stype_out="symbol",
-                start=expiry_date - timedelta(days=30),
-                end=expiry_date,
-                max_records=10000
+                start=(expiry_date - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S"),
+                end=expiry_date.strftime("%Y-%m-%dT%H:%M:%S"),
+                symbols=",".join(symbols),
+                schema="trades",
+                split_duration="day",
+                stype_in="parent",
             )
             
-            if data.empty:
+            # Get job ID
+            new_job_id: str = new_job["id"]
+            logger.info(f"Submitted batch job with ID: {new_job_id}")
+            
+            # Wait for job to complete
+            logger.info("Waiting for batch job to complete...")
+            while True:
+                done_jobs = list(map(operator.itemgetter("id"), self.client.batch.list_jobs("done")))
+                if new_job_id in done_jobs:
+                    break
+                time.sleep(1.0)
+            
+            logger.info("Batch job completed, downloading files...")
+            
+            # Download files
+            downloaded_files = self.client.batch.download(
+                job_id=new_job_id,
+                output_dir=pathlib.Path.cwd(),
+            )
+            
+            # Load data from files
+            all_data = []
+            for file in sorted(downloaded_files):
+                if file.name.endswith(".dbn.zst"):
+                    data = db.DBNStore.from_file(file)
+                    df = data.to_df()
+                    all_data.append(df)
+                    logger.info(f"{file.name} contains {len(df):,d} records")
+            
+            if not all_data:
                 logger.warning(f"No option data found for {underlying}")
                 return pd.DataFrame()
             
+            # Combine all data
+            combined_df = pd.concat(all_data, ignore_index=True)
+            
             # Process option data
-            df = self._process_option_data(data, underlying)
+            df = self._process_option_data(combined_df, underlying)
             logger.info(f"Retrieved {len(df)} option records for {underlying}")
             
             return df
