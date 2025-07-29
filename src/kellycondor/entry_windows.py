@@ -5,7 +5,7 @@ Supports multiple intraday entry windows with performance tracking.
 
 import logging
 from datetime import datetime, time, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
 import pytz

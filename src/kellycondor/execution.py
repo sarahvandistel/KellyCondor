@@ -685,10 +685,10 @@ class WindowAwareIBKRTradeExecutor(IBKRTradeExecutor):
 
 def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 7497, 
                    client_id: int = 1, simulation_mode: bool = False,
-                   enable_windows: bool = True, window_config: List[Dict[str, any]] = None,
+                   enable_windows: bool = True, window_config: List[Dict[str, Any]] = None,
                    enable_advanced_strikes: bool = True, rotation_period: int = 5,
                    force_top_ranked: bool = False, enable_exit_rules: bool = True,
-                   exit_config: List[Dict[str, any]] = None, enable_regime_analysis: bool = True,
+                   exit_config: List[Dict[str, Any]] = None, enable_regime_analysis: bool = True,
                    regime_clusters: int = 6, min_trades_per_regime: int = 10):
     """Main entry point for paper trading with optional entry window, advanced strike selection, exit rules, and regime analysis support."""
     logging.basicConfig(level=logging.INFO)
@@ -936,13 +936,13 @@ def _generate_sample_trades(n_trades: int) -> List[Dict[str, Any]]:
 
 
 def run_backtest_with_regime_analysis(historical_data: pd.DataFrame, 
-                                    window_config: List[Dict[str, any]] = None,
+                                    window_config: List[Dict[str, Any]] = None,
                                     account_size: float = 100000,
                                     rotation_period: int = 5,
                                     force_top_ranked: bool = False,
-                                    exit_config: List[Dict[str, any]] = None,
+                                    exit_config: List[Dict[str, Any]] = None,
                                     regime_clusters: int = 6,
-                                    min_trades_per_regime: int = 10) -> Dict[str, any]:
+                                    min_trades_per_regime: int = 10) -> Dict[str, Any]:
     """Run backtest with regime analysis, advanced strike selection, entry windows, and exit rules."""
     from .entry_windows import create_custom_window_manager
     from .exit_rules import ExitRuleBacktester, ExitRule, ExitTrigger
