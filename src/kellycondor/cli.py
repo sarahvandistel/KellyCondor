@@ -8,7 +8,7 @@ import logging
 import sys
 import json
 from typing import List, Dict, Any
-from .execution import run_paper_trade, run_backtest_with_windows
+from .execution import run_paper_trade, run_backtest_with_advanced_strikes
 
 
 def parse_window_config(config_str: str) -> List[Dict[str, Any]]:
@@ -80,8 +80,20 @@ Examples:
   # Paper trade with custom window configuration
   kelly-live --paper --enable-windows --window-config windows.json
   
-  # Backtest with entry window analysis
-  kelly-live --backtest --enable-windows --data-file historical_data.csv
+  # Paper trade with advanced strike selection
+  kelly-live --paper --enable-advanced-strikes
+  
+  # Paper trade with rotating strike selection
+  kelly-live --paper --enable-advanced-strikes --rotation-period 3
+  
+  # Paper trade forcing top-ranked combinations
+  kelly-live --paper --enable-advanced-strikes --force-top-ranked
+  
+  # Backtest with advanced strike selection
+  kelly-live --backtest --enable-advanced-strikes --data-file historical_data.csv
+  
+  # Backtest with rotating strikes and windows
+  kelly-live --backtest --enable-windows --enable-advanced-strikes --rotation-period 5 --data-file data.csv
         """
     )
     
@@ -158,6 +170,32 @@ Examples:
         help="Disable entry window management (default)"
     )
     
+    # Advanced strike selection arguments
+    parser.add_argument(
+        "--enable-advanced-strikes",
+        action="store_true",
+        help="Enable advanced strike selection with IV percentile and skew buckets"
+    )
+    
+    parser.add_argument(
+        "--rotation-period",
+        type=int,
+        default=5,
+        help="Rotation period for rotating strike selector (default: 5)"
+    )
+    
+    parser.add_argument(
+        "--force-top-ranked",
+        action="store_true",
+        help="Force selection of top-ranked IV/skew combinations only"
+    )
+    
+    parser.add_argument(
+        "--strike-config",
+        type=str,
+        help="Strike selection configuration file"
+    )
+    
     # Backtesting arguments
     parser.add_argument(
         "--data-file",
@@ -208,6 +246,17 @@ Examples:
         window_config = get_default_window_config()
         logger.info("Using default window configuration")
     
+    # Parse strike selection configuration
+    strike_config = None
+    if args.strike_config:
+        try:
+            with open(args.strike_config, 'r') as f:
+                strike_config = json.load(f)
+            logger.info(f"Loaded custom strike configuration: {strike_config}")
+        except Exception as e:
+            logger.error(f"Failed to parse strike configuration: {e}")
+            sys.exit(1)
+    
     # Validate arguments
     if args.backtest and not args.data_file:
         logger.error("Backtest mode requires --data-file")
@@ -234,6 +283,12 @@ Examples:
     logger.info(f"  Entry Windows: {'Enabled' if args.enable_windows else 'Disabled'}")
     if args.enable_windows and window_config:
         logger.info(f"  Window Config: {len(window_config)} windows")
+    logger.info(f"  Advanced Strikes: {'Enabled' if args.enable_advanced_strikes else 'Disabled'}")
+    if args.enable_advanced_strikes:
+        if args.rotation_period > 0:
+            logger.info(f"  Rotation Period: {args.rotation_period}")
+        if args.force_top_ranked:
+            logger.info("  Force Top-Ranked: Enabled")
     logger.info(f"  Dry Run: {args.dry_run}")
     
     try:
@@ -241,6 +296,9 @@ Examples:
         if args.paper or args.simulate:
             simulation_mode = args.simulate
             enable_windows = args.enable_windows
+            enable_advanced_strikes = args.enable_advanced_strikes
+            rotation_period = args.rotation_period if args.enable_advanced_strikes else 0
+            force_top_ranked = args.force_top_ranked
             
             if args.paper:
                 logger.info("Starting paper trading session...")
@@ -255,11 +313,14 @@ Examples:
                 client_id=args.client_id,
                 simulation_mode=simulation_mode,
                 enable_windows=enable_windows,
-                window_config=window_config
+                window_config=window_config,
+                enable_advanced_strikes=enable_advanced_strikes,
+                rotation_period=rotation_period,
+                force_top_ranked=force_top_ranked
             )
             
         elif args.backtest:
-            logger.info("Starting backtest with entry window analysis...")
+            logger.info("Starting backtest with advanced strike selection...")
             
             # Load historical data
             try:
@@ -271,27 +332,40 @@ Examples:
                 sys.exit(1)
             
             # Run backtest
-            results = run_backtest_with_windows(
+            results = run_backtest_with_advanced_strikes(
                 historical_data=data,
                 window_config=window_config,
-                account_size=args.account_size
+                account_size=args.account_size,
+                rotation_period=args.rotation_period if args.enable_advanced_strikes else 0,
+                force_top_ranked=args.force_top_ranked
             )
             
             # Display results
             logger.info("Backtest Results:")
             logger.info(f"  Total Trades: {results['total_trades']}")
-            logger.info("\nWindow Performance:")
-            for window_name, performance in results['window_performance'].items():
-                logger.info(f"  {window_name}:")
-                logger.info(f"    Trades: {performance['trades_placed']}")
-                logger.info(f"    Total PnL: ${performance['total_pnl']:.2f}")
-                logger.info(f"    Win Rate: {performance['win_rate']:.1%}")
-                logger.info(f"    Avg Trade Size: ${performance['avg_trade_size']:.2f}")
+            
+            if args.enable_windows:
+                logger.info("\nWindow Performance:")
+                for window_name, performance in results['window_performance'].items():
+                    logger.info(f"  {window_name}:")
+                    logger.info(f"    Trades: {performance['trades_placed']}")
+                    logger.info(f"    Total PnL: ${performance['total_pnl']:.2f}")
+                    logger.info(f"    Win Rate: {performance['win_rate']:.1%}")
+                    logger.info(f"    Avg Trade Size: ${performance['avg_trade_size']:.2f}")
+            
+            if args.enable_advanced_strikes:
+                logger.info("\nStrike Selection Performance:")
+                for combination, score in results['top_combinations']:
+                    performance = results['strike_performance'].get(combination, {})
+                    logger.info(f"  {combination}:")
+                    logger.info(f"    Score: {score:.3f}")
+                    logger.info(f"    Trades: {performance.get('trades', 0)}")
+                    logger.info(f"    Win Rate: {performance.get('win_rate', 0.0):.1%}")
+                    logger.info(f"    Avg PnL: ${performance.get('avg_pnl', 0.0):.2f}")
             
             # Save results if output file specified
             if args.output_file:
                 try:
-                    import json
                     with open(args.output_file, 'w') as f:
                         json.dump(results, f, indent=2, default=str)
                     logger.info(f"Results saved to {args.output_file}")

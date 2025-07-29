@@ -26,6 +26,13 @@ from .entry_windows import (
     WindowAwareSizer,
     create_default_window_manager
 )
+from .strike_selector import (
+    AdvancedStrikeSelector,
+    RotatingStrikeSelector,
+    StrikeSelectionConfig,
+    create_default_strike_selector,
+    create_rotating_strike_selector
+)
 
 
 @dataclass
@@ -187,17 +194,20 @@ class IBKRTradeExecutor:
     """Executes iron condor trades through IBKR."""
     
     def __init__(self, client: IBKRClient, processor: Processor, sizer: KellySizer, 
-                 window_manager: EntryWindowManager = None):
+                 window_manager: EntryWindowManager = None, 
+                 strike_selector: AdvancedStrikeSelector = None):
         self.client = client
         self.processor = processor
         self.sizer = sizer
         self.window_manager = window_manager
+        self.strike_selector = strike_selector or create_default_strike_selector()
         self.active_orders = {}
         self.trade_history = []
         self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
         
     def submit_iron_condor(self, symbol: str = "SPX", expiry: str = None, 
-                          window_name: str = None) -> Optional[IronCondorOrder]:
+                          window_name: str = None, current_price: float = None,
+                          force_top_ranked: bool = False) -> Optional[IronCondorOrder]:
         """Submit an iron condor order based on current market conditions."""
         if not self.client.connected:
             logging.error("IBKR client not connected")
@@ -214,8 +224,8 @@ class IBKRTradeExecutor:
         else:
             sizing = self.sizer.get_current_sizing()
         
-        # Create iron condor order
-        order = self._create_iron_condor_order(symbol, expiry, sizing)
+        # Create iron condor order with advanced strike selection
+        order = self._create_iron_condor_order_advanced(symbol, expiry, sizing, current_price, force_top_ranked)
         
         # Submit the order
         success = self._submit_order(order)
@@ -266,10 +276,60 @@ class IBKRTradeExecutor:
         except Exception as e:
             logging.error(f"Failed to log trade to Redis: {e}")
     
+    def _create_iron_condor_order_advanced(self, symbol: str, expiry: str, sizing: Dict[str, float],
+                                          current_price: float = None, force_top_ranked: bool = False) -> IronCondorOrder:
+        """Create an iron condor order using advanced strike selection."""
+        
+        # Get current market price if not provided
+        if current_price is None:
+            current_price = 4500  # Would get from market data
+        
+        # Get current IV and skew from processor
+        current_iv = getattr(self.processor, 'current_iv_rank', 0.5)
+        current_skew = getattr(self.processor, 'current_skew', 0.0)
+        
+        # Use advanced strike selector
+        if isinstance(self.strike_selector, RotatingStrikeSelector):
+            # Use rotating selection
+            selection_result = self.strike_selector.select_rotating_strikes(
+                current_price, current_iv, current_skew
+            )
+        else:
+            # Use standard selection with optional top-ranked forcing
+            selection_result = self.strike_selector.select_optimal_strikes(
+                current_price, current_iv, current_skew, force_top_ranked=force_top_ranked
+            )
+        
+        # Calculate quantity based on Kelly sizing
+        position_size = sizing["position_size"]
+        max_risk = sizing["max_risk_amount"]
+        quantity = int(position_size / max_risk)  # Simplified
+        
+        # Create order with selected strikes
+        order = IronCondorOrder(
+            symbol=symbol,
+            expiry=expiry or "20241220",  # Default expiry
+            call_strike=selection_result.call_strike,
+            put_strike=selection_result.put_strike,
+            call_spread=selection_result.call_spread,
+            put_spread=selection_result.put_spread,
+            quantity=quantity
+        )
+        
+        # Store selection metadata
+        order.selection_metadata = {
+            "iv_percentile": selection_result.iv_percentile.value,
+            "skew_bucket": selection_result.skew_bucket.value,
+            "wing_distance": selection_result.wing_distance,
+            "selection_score": selection_result.selection_score,
+            "reasoning": selection_result.reasoning
+        }
+        
+        return order
+    
     def _create_iron_condor_order(self, symbol: str, expiry: str, sizing: Dict[str, float]) -> IronCondorOrder:
-        """Create an iron condor order based on current market conditions."""
-        # Calculate strikes based on current market conditions
-        # This is a simplified version - in practice you'd use current SPX price
+        """Create an iron condor order based on current market conditions (legacy method)."""
+        # This is the original simplified method - kept for backward compatibility
         current_price = 4500  # Would get from market data
         
         # Iron condor strikes (simplified)
@@ -427,8 +487,9 @@ class WindowAwareIBKRTradeExecutor(IBKRTradeExecutor):
     """IBKR trade executor with entry window awareness."""
     
     def __init__(self, client: IBKRClient, processor: WindowAwareProcessor, 
-                 sizer: WindowAwareSizer, window_manager: EntryWindowManager):
-        super().__init__(client, processor, sizer, window_manager)
+                 sizer: WindowAwareSizer, window_manager: EntryWindowManager,
+                 strike_selector: AdvancedStrikeSelector = None):
+        super().__init__(client, processor, sizer, window_manager, strike_selector)
         self.window_processor = processor
         self.window_sizer = sizer
         
@@ -447,12 +508,34 @@ class WindowAwareIBKRTradeExecutor(IBKRTradeExecutor):
         if self.window_manager:
             return self.window_manager.get_all_performance()
         return {}
+    
+    def get_strike_selection_summary(self) -> str:
+        """Get a summary of strike selection performance."""
+        if not self.strike_selector:
+            return "No strike selector configured"
+        
+        top_combinations = self.strike_selector.get_top_ranked_combinations()
+        
+        summary = "Strike Selection Performance:\n"
+        summary += "=" * 50 + "\n"
+        
+        for combination, score in top_combinations:
+            performance = self.strike_selector.historical_performance.get(combination, {})
+            summary += f"Combination: {combination}\n"
+            summary += f"  Score: {score:.3f}\n"
+            summary += f"  Trades: {performance.get('trades', 0)}\n"
+            summary += f"  Win Rate: {performance.get('win_rate', 0.0):.1%}\n"
+            summary += f"  Avg PnL: ${performance.get('avg_pnl', 0.0):.2f}\n"
+        
+        return summary
 
 
 def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 7497, 
                    client_id: int = 1, simulation_mode: bool = False,
-                   enable_windows: bool = True, window_config: List[Dict[str, any]] = None):
-    """Main entry point for paper trading with optional entry window support."""
+                   enable_windows: bool = True, window_config: List[Dict[str, any]] = None,
+                   enable_advanced_strikes: bool = True, rotation_period: int = 5,
+                   force_top_ranked: bool = False):
+    """Main entry point for paper trading with optional entry window and advanced strike selection support."""
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     
@@ -505,11 +588,21 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
         logger.info("Entry window management enabled")
         logger.info(window_manager.get_window_summary())
     
+    # Initialize strike selector
+    strike_selector = None
+    if enable_advanced_strikes:
+        if rotation_period > 0:
+            strike_selector = create_rotating_strike_selector(rotation_period)
+            logger.info(f"Advanced strike selection enabled with rotation (period: {rotation_period})")
+        else:
+            strike_selector = create_default_strike_selector()
+            logger.info("Advanced strike selection enabled")
+    
     # Initialize executor
     if enable_windows:
-        executor = WindowAwareIBKRTradeExecutor(ibkr, processor, sizer, window_manager)
+        executor = WindowAwareIBKRTradeExecutor(ibkr, processor, sizer, window_manager, strike_selector)
     else:
-        executor = IBKRTradeExecutor(ibkr, processor, sizer)
+        executor = IBKRTradeExecutor(ibkr, processor, sizer, strike_selector)
     
     # Initialize data stream
     stream = DatabentoStream(api_key or "demo_key")
@@ -524,23 +617,33 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
             if enable_windows:
                 should_trade, window_name = executor.should_trade_now()
                 if should_trade:
-                    order = executor.submit_iron_condor(window_name=window_name)
+                    order = executor.submit_iron_condor(
+                        window_name=window_name,
+                        force_top_ranked=force_top_ranked
+                    )
                     if order:
                         logger.info(f"Submitted iron condor order in {window_name} window: {order}")
+                        if hasattr(order, 'selection_metadata'):
+                            logger.info(f"Strike selection: {order.selection_metadata['reasoning']}")
             else:
                 # Original logic without windows
                 if _should_submit_trade(processor):
-                    order = executor.submit_iron_condor()
+                    order = executor.submit_iron_condor(force_top_ranked=force_top_ranked)
                     if order:
                         logger.info(f"Submitted iron condor order: {order}")
+                        if hasattr(order, 'selection_metadata'):
+                            logger.info(f"Strike selection: {order.selection_metadata['reasoning']}")
             
             # Check for order updates
             _check_order_status(executor)
             
-            # Log window performance periodically
-            if enable_windows and hasattr(executor, 'get_window_performance_summary'):
-                if int(time.time()) % 300 == 0:  # Every 5 minutes
+            # Log performance summaries periodically
+            if int(time.time()) % 300 == 0:  # Every 5 minutes
+                if enable_windows and hasattr(executor, 'get_window_performance_summary'):
                     logger.info(executor.get_window_performance_summary())
+                
+                if enable_advanced_strikes and hasattr(executor, 'get_strike_selection_summary'):
+                    logger.info(executor.get_strike_selection_summary())
             
     except KeyboardInterrupt:
         logger.info("Stopping paper trading session...")
@@ -563,10 +666,12 @@ def _check_order_status(executor: IBKRTradeExecutor):
             del executor.active_orders[order_id]
 
 
-def run_backtest_with_windows(historical_data: pd.DataFrame, 
-                             window_config: List[Dict[str, any]] = None,
-                             account_size: float = 100000) -> Dict[str, any]:
-    """Run backtest with entry window analysis."""
+def run_backtest_with_advanced_strikes(historical_data: pd.DataFrame, 
+                                      window_config: List[Dict[str, any]] = None,
+                                      account_size: float = 100000,
+                                      rotation_period: int = 5,
+                                      force_top_ranked: bool = False) -> Dict[str, any]:
+    """Run backtest with advanced strike selection and entry window analysis."""
     from .entry_windows import create_custom_window_manager
     
     # Create window manager
@@ -591,7 +696,13 @@ def run_backtest_with_windows(historical_data: pd.DataFrame,
     window_processor = WindowAwareProcessor(processor, window_manager)
     window_sizer = WindowAwareSizer(sizer, window_manager)
     
-    # Simulate trading with window awareness
+    # Create strike selector
+    if rotation_period > 0:
+        strike_selector = create_rotating_strike_selector(rotation_period)
+    else:
+        strike_selector = create_default_strike_selector()
+    
+    # Simulate trading with advanced strike selection
     trades = []
     current_time = datetime.now()
     
@@ -612,20 +723,39 @@ def run_backtest_with_windows(historical_data: pd.DataFrame,
         should_trade, window_name = window_processor.should_trade(current_time)
         
         if should_trade:
-            # Simulate trade
+            # Get current market conditions
+            current_price = row.get("price", 4500)
+            current_iv = processor.current_iv_rank
+            current_skew = processor.current_skew
+            
+            # Select strikes using advanced selector
+            if isinstance(strike_selector, RotatingStrikeSelector):
+                selection_result = strike_selector.select_rotating_strikes(
+                    current_price, current_iv, current_skew
+                )
+            else:
+                selection_result = strike_selector.select_optimal_strikes(
+                    current_price, current_iv, current_skew, force_top_ranked=force_top_ranked
+                )
+            
+            # Get sizing
             sizing = window_sizer.size_position(
-                processor.current_iv_rank,
-                processor.current_skew,
-                account_size,
-                window_name
+                current_iv, current_skew, account_size, window_name
             )
             
+            # Simulate trade
             trade = {
                 "timestamp": current_time,
                 "window": window_name,
-                "iv_rank": processor.current_iv_rank,
-                "skew": processor.current_skew,
+                "iv_rank": current_iv,
+                "skew": current_skew,
                 "position_size": sizing["position_size"],
+                "call_strike": selection_result.call_strike,
+                "put_strike": selection_result.put_strike,
+                "wing_distance": selection_result.wing_distance,
+                "iv_percentile": selection_result.iv_percentile.value,
+                "skew_bucket": selection_result.skew_bucket.value,
+                "selection_score": selection_result.selection_score,
                 "pnl": 0.0  # Would be calculated based on exit
             }
             
@@ -633,17 +763,25 @@ def run_backtest_with_windows(historical_data: pd.DataFrame,
             
             # Record in window manager
             window_manager.record_trade(window_name, 0.0, sizing["position_size"])
+            
+            # Update strike selector performance (simulate PnL)
+            simulated_pnl = np.random.normal(50, 100)  # Simulate PnL
+            win = simulated_pnl > 0
+            strike_selector.update_performance(selection_result, simulated_pnl, win, sizing["position_size"])
         
         current_time += timedelta(minutes=1)
     
-    # Calculate window-specific performance
+    # Calculate performance metrics
     window_performance = window_manager.get_all_performance()
+    strike_performance = strike_selector.historical_performance
     
     return {
         "trades": trades,
         "window_performance": window_performance,
+        "strike_performance": strike_performance,
         "total_trades": len(trades),
-        "window_summary": window_manager.get_window_summary()
+        "window_summary": window_manager.get_window_summary(),
+        "top_combinations": strike_selector.get_top_ranked_combinations()
     }
 
 

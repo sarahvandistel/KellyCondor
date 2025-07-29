@@ -16,7 +16,7 @@ from .execution import (
     WindowAwareIBKRTradeExecutor,
     IronCondorOrder,
     run_paper_trade,
-    run_backtest_with_windows
+    run_backtest_with_advanced_strikes
 )
 from .entry_windows import (
     EntryWindow,
@@ -25,6 +25,17 @@ from .entry_windows import (
     WindowAwareSizer,
     create_default_window_manager,
     create_custom_window_manager
+)
+from .strike_selector import (
+    AdvancedStrikeSelector,
+    RotatingStrikeSelector,
+    StrikeSelectionConfig,
+    StrikeSelectionResult,
+    SkewBucket,
+    IVPercentile,
+    create_default_strike_selector,
+    create_rotating_strike_selector,
+    create_custom_strike_selector
 )
 
 __all__ = [
@@ -38,11 +49,20 @@ __all__ = [
     "WindowAwareIBKRTradeExecutor",
     "IronCondorOrder",
     "run_paper_trade",
-    "run_backtest_with_windows",
+    "run_backtest_with_advanced_strikes",
     "EntryWindow",
     "EntryWindowManager", 
     "WindowAwareProcessor",
     "WindowAwareSizer",
     "create_default_window_manager",
-    "create_custom_window_manager"
+    "create_custom_window_manager",
+    "AdvancedStrikeSelector",
+    "RotatingStrikeSelector",
+    "StrikeSelectionConfig",
+    "StrikeSelectionResult",
+    "SkewBucket",
+    "IVPercentile",
+    "create_default_strike_selector",
+    "create_rotating_strike_selector",
+    "create_custom_strike_selector"
 ] 
