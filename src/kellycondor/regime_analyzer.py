@@ -128,7 +128,11 @@ class RegimeAnalyzer:
         
         # Generate price series with some randomness
         timestamp = trade.get("timestamp", datetime.now())
-        seed_value = hash(str(timestamp)) if timestamp else 42
+        # Ensure seed is within valid range (0 to 2^32 - 1)
+        if timestamp:
+            seed_value = abs(hash(str(timestamp))) % (2**32)
+        else:
+            seed_value = 42
         np.random.seed(seed_value)  # For reproducibility
         price_changes = np.random.normal(0, 0.01, n_points)  # 1% daily volatility
         price_series = [entry_price]
