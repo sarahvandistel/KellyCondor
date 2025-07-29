@@ -77,12 +77,39 @@ class IBKRClient(EWrapper, EClient):
         self.orders = {}
         self.positions = {}
         self.account_info = {}
+    
+    def isConnected(self):
+        """Check if connected to IBKR."""
+        return self.connected
         
     def connect_and_run(self, host: str, port: int, client_id: int):
         """Connect to TWS/IB Gateway and start the event loop."""
-        self.connect(host, port, client_id)
-        self.connected = True
-        self.run()
+        try:
+            logging.info(f"Attempting to connect to IBKR at {host}:{port}")
+            self.connect(host, port, client_id)
+            
+            # Set a timeout for the connection
+            import threading
+            import time
+            
+            def connection_timeout():
+                time.sleep(5)  # 5 second timeout
+                if not self.connected:
+                    logging.error("Connection timeout - IBKR not responding")
+                    self.disconnect()
+            
+            # Start timeout thread
+            timeout_thread = threading.Thread(target=connection_timeout)
+            timeout_thread.daemon = True
+            timeout_thread.start()
+            
+            # Run the event loop
+            self.run()
+            
+        except Exception as e:
+            logging.error(f"Connection failed: {e}")
+            self.connected = False
+            raise
     
     def nextValidId(self, orderId: int):
         """Callback when next valid order ID is received."""
@@ -702,12 +729,45 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
     # Connect to TWS/IB Gateway (skip if simulation mode)
     if not simulation_mode:
         try:
-            ibkr.connect_and_run(host, port, client_id)
-            logger.info("Connected to IBKR")
+            logger.info(f"Attempting to connect to IBKR at {host}:{port}")
+            # Try to connect with a timeout
+            import threading
+            import time
+            
+            connection_success = False
+            
+            def connect_with_timeout():
+                nonlocal connection_success
+                try:
+                    ibkr.connect(host, port, client_id)
+                    time.sleep(2)  # Wait for connection
+                    if ibkr.isConnected():
+                        ibkr.connected = True
+                        connection_success = True
+                        logger.info("Connected to IBKR")
+                    else:
+                        logger.error("Connection failed - IBKR not responding")
+                except Exception as e:
+                    logger.error(f"Connection failed: {e}")
+            
+            # Start connection in a thread
+            connect_thread = threading.Thread(target=connect_with_timeout)
+            connect_thread.daemon = True
+            connect_thread.start()
+            
+            # Wait for connection with timeout
+            connect_thread.join(timeout=10)
+            
+            if not connection_success:
+                logger.warning("IBKR connection failed, switching to simulation mode")
+                simulation_mode = True
+                
         except Exception as e:
             logger.error(f"Failed to connect to IBKR: {e}")
-            return
-    else:
+            logger.warning("Switching to simulation mode")
+            simulation_mode = True
+    
+    if simulation_mode:
         logger.info("Running in simulation mode - no IBKR connection")
         ibkr.connected = True  # Mock connection for simulation
     
