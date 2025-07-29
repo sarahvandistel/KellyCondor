@@ -48,6 +48,10 @@ from .regime_analyzer import (
     create_regime_analyzer,
     create_regime_aware_sizer
 )
+from .databento_historical import (
+    DatabentoHistoricalData, HistoricalDataConfig, MarketDataPoint,
+    create_historical_data_client, get_backtest_data
+)
 
 
 @dataclass
@@ -1174,6 +1178,153 @@ def run_backtest_with_regime_analysis(historical_data: pd.DataFrame,
     results["comparison_report"] = backtester.compare_configurations()
     
     return results
+
+
+def run_historical_backtest_with_databento(
+    symbol: str,
+    start_date: datetime,
+    end_date: datetime,
+    api_key: Optional[str] = None,
+    window_config: List[Dict[str, Any]] = None,
+    account_size: float = 100000,
+    rotation_period: int = 5,
+    force_top_ranked: bool = False,
+    exit_config: List[Dict[str, Any]] = None,
+    regime_clusters: int = 6,
+    min_trades_per_regime: int = 10,
+    dataset: str = "GLBX.MDP3"
+) -> Dict[str, Any]:
+    """
+    Run backtest using historical data from Databento.
+    
+    Args:
+        symbol: Trading symbol (e.g., "ES", "SPX")
+        start_date: Start date for historical data
+        end_date: End date for historical data
+        api_key: Databento API key (optional, uses env var if not provided)
+        window_config: Entry window configuration
+        account_size: Account size for position sizing
+        rotation_period: Strike rotation period
+        force_top_ranked: Force top-ranked strikes
+        exit_config: Exit rule configuration
+        regime_clusters: Number of regime clusters
+        min_trades_per_regime: Minimum trades per regime
+        dataset: Databento dataset name
+    
+    Returns:
+        Dictionary containing backtest results
+    """
+    logger.info(f"Starting historical backtest for {symbol} from {start_date} to {end_date}")
+    
+    try:
+        # Initialize Databento client
+        historical_client = create_historical_data_client(api_key)
+        
+        # Configure data retrieval
+        config = HistoricalDataConfig(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            dataset=dataset,
+            stype_in="trade",
+            stype_out="symbol"
+        )
+        
+        # Fetch historical data
+        logger.info(f"Fetching historical data for {symbol}...")
+        historical_data = historical_client.fetch_trade_data(config)
+        
+        if historical_data.empty:
+            logger.error(f"No historical data found for {symbol}")
+            return {
+                "error": f"No historical data found for {symbol}",
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date
+            }
+        
+        logger.info(f"Retrieved {len(historical_data)} data points for {symbol}")
+        
+        # Process historical data for backtesting
+        processed_data = _process_historical_data_for_backtest(historical_data)
+        
+        # Run backtest with processed data
+        results = run_backtest_with_regime_analysis(
+            historical_data=processed_data,
+            window_config=window_config,
+            account_size=account_size,
+            rotation_period=rotation_period,
+            force_top_ranked=force_top_ranked,
+            exit_config=exit_config,
+            regime_clusters=regime_clusters,
+            min_trades_per_regime=min_trades_per_regime
+        )
+        
+        # Add historical data metadata
+        results["historical_data_metadata"] = {
+            "symbol": symbol,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "dataset": dataset,
+            "data_points": len(historical_data),
+            "data_columns": list(historical_data.columns)
+        }
+        
+        logger.info(f"Historical backtest completed for {symbol}")
+        return results
+        
+    except Exception as e:
+        logger.error(f"Historical backtest failed: {e}")
+        return {
+            "error": str(e),
+            "symbol": symbol,
+            "start_date": start_date,
+            "end_date": end_date
+        }
+
+
+def _process_historical_data_for_backtest(historical_data: pd.DataFrame) -> pd.DataFrame:
+    """
+    Process historical data for backtesting.
+    
+    Args:
+        historical_data: Raw historical data from Databento
+        
+    Returns:
+        Processed data suitable for backtesting
+    """
+    if historical_data.empty:
+        return historical_data
+    
+    # Create a copy to avoid modifying original
+    df = historical_data.copy()
+    
+    # Ensure we have required columns
+    required_cols = ['timestamp', 'price']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        logger.warning(f"Missing required columns: {missing_cols}")
+        return pd.DataFrame()
+    
+    # Add simulated IV and other required fields for backtesting
+    df['iv'] = np.random.uniform(0.15, 0.35, len(df))  # Simulated IV
+    df['iv_rank'] = np.random.uniform(0.1, 0.9, len(df))  # Simulated IV rank
+    df['skew'] = np.random.uniform(-0.1, 0.1, len(df))  # Simulated skew
+    df['volume'] = df.get('size', np.random.randint(100, 1000, len(df)))
+    
+    # Add option-specific fields for iron condor backtesting
+    df['expiry'] = (df['timestamp'] + pd.Timedelta(days=30)).dt.strftime('%Y-%m-%d')
+    df['underlying_price'] = df['price']
+    
+    # Calculate rolling volatility for regime analysis
+    df['rolling_volatility'] = df['price'].rolling(window=20).std() / df['price'].rolling(window=20).mean()
+    df['rolling_drift'] = df['price'].pct_change().rolling(window=20).mean()
+    
+    # Fill NaN values
+    df = df.fillna(method='ffill').fillna(method='bfill')
+    
+    logger.info(f"Processed {len(df)} data points for backtesting")
+    return df
 
 
 if __name__ == "__main__":

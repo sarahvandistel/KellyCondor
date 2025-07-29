@@ -16,7 +16,8 @@ from .execution import (
     WindowAwareIBKRTradeExecutor,
     IronCondorOrder,
     run_paper_trade,
-    run_backtest_with_regime_analysis
+    run_backtest_with_regime_analysis,
+    run_historical_backtest_with_databento
 )
 from .entry_windows import (
     EntryWindow,
@@ -57,6 +58,13 @@ from .regime_analyzer import (
     create_regime_analyzer,
     create_regime_aware_sizer
 )
+from .databento_historical import (
+    DatabentoHistoricalData,
+    HistoricalDataConfig,
+    MarketDataPoint,
+    create_historical_data_client,
+    get_backtest_data
+)
 
 __all__ = [
     "Processor", 
@@ -70,6 +78,7 @@ __all__ = [
     "IronCondorOrder",
     "run_paper_trade",
     "run_backtest_with_regime_analysis",
+    "run_historical_backtest_with_databento",
     "EntryWindow",
     "EntryWindowManager", 
     "WindowAwareProcessor",
@@ -100,5 +109,10 @@ __all__ = [
     "RegimeSizingParams",
     "RegimeType",
     "create_regime_analyzer",
-    "create_regime_aware_sizer"
+    "create_regime_aware_sizer",
+    "DatabentoHistoricalData",
+    "HistoricalDataConfig",
+    "MarketDataPoint",
+    "create_historical_data_client",
+    "get_backtest_data"
 ] 

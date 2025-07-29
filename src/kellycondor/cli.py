@@ -8,7 +8,7 @@ import logging
 import sys
 import json
 from typing import List, Dict, Any
-from .execution import run_paper_trade, run_backtest_with_regime_analysis
+from .execution import run_paper_trade, run_backtest_with_regime_analysis, run_historical_backtest_with_databento
 
 
 def parse_window_config(config_str: str) -> List[Dict[str, Any]]:
@@ -112,6 +112,15 @@ Examples:
   
   # Backtest with all features
   kelly-live --backtest --enable-windows --enable-advanced-strikes --enable-exit-rules --enable-regime-analysis --data-file data.csv
+  
+  # Historical backtest with Databento data
+  kelly-live --backtest --historical-symbol ES --start-date 2024-01-01 --end-date 2024-01-31 --enable-regime-analysis
+  
+  # Historical backtest with all features
+  kelly-live --backtest --historical-symbol SPX --start-date 2024-01-01 --end-date 2024-01-31 --enable-windows --enable-advanced-strikes --enable-exit-rules --enable-regime-analysis
+  
+  # Historical backtest with custom dataset
+  kelly-live --backtest --historical-symbol ES --start-date 2024-01-01 --end-date 2024-01-31 --dataset GLBX.MDP3 --enable-regime-analysis
         """
     )
     
@@ -273,6 +282,32 @@ Examples:
         help="Output file for backtest results"
     )
     
+    # Historical backtesting with Databento
+    parser.add_argument(
+        "--historical-symbol",
+        type=str,
+        help="Symbol for historical backtesting (e.g., ES, SPX)"
+    )
+    
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        help="Start date for historical data (YYYY-MM-DD format)"
+    )
+    
+    parser.add_argument(
+        "--end-date", 
+        type=str,
+        help="End date for historical data (YYYY-MM-DD format)"
+    )
+    
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="GLBX.MDP3",
+        help="Databento dataset name (default: GLBX.MDP3)"
+    )
+    
     # General arguments
     parser.add_argument(
         "--verbose", "-v",
@@ -413,26 +448,75 @@ Examples:
         elif args.backtest:
             logger.info("Starting backtest with regime analysis...")
             
-            # Load historical data
-            try:
-                import pandas as pd
-                data = pd.read_csv(args.data_file)
-                logger.info(f"Loaded {len(data)} data points from {args.data_file}")
-            except Exception as e:
-                logger.error(f"Failed to load data file: {e}")
-                sys.exit(1)
-            
-            # Run backtest
-            results = run_backtest_with_regime_analysis(
-                historical_data=data,
-                window_config=window_config,
-                account_size=args.account_size,
-                rotation_period=args.rotation_period if args.enable_advanced_strikes else 0,
-                force_top_ranked=args.force_top_ranked,
-                exit_config=exit_config,
-                regime_clusters=args.regime_clusters,
-                min_trades_per_regime=args.min_trades_per_regime
-            )
+            # Check if we're doing historical backtesting with Databento
+            if args.historical_symbol and args.start_date and args.end_date:
+                logger.info("Using Databento historical data for backtesting...")
+                
+                # Parse dates
+                try:
+                    from datetime import datetime
+                    start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
+                    end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
+                except ValueError as e:
+                    logger.error(f"Invalid date format. Use YYYY-MM-DD: {e}")
+                    sys.exit(1)
+                
+                # Run historical backtest
+                results = run_historical_backtest_with_databento(
+                    symbol=args.historical_symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    api_key=args.api_key,
+                    window_config=window_config,
+                    account_size=args.account_size,
+                    rotation_period=args.rotation_period if args.enable_advanced_strikes else 0,
+                    force_top_ranked=args.force_top_ranked,
+                    exit_config=exit_config,
+                    regime_clusters=args.regime_clusters,
+                    min_trades_per_regime=args.min_trades_per_regime,
+                    dataset=args.dataset
+                )
+                
+                # Check for errors
+                if "error" in results:
+                    logger.error(f"Historical backtest failed: {results['error']}")
+                    sys.exit(1)
+                
+                # Display historical data metadata
+                if "historical_data_metadata" in results:
+                    metadata = results["historical_data_metadata"]
+                    logger.info("\nHistorical Data Metadata:")
+                    logger.info(f"  Symbol: {metadata['symbol']}")
+                    logger.info(f"  Dataset: {metadata['dataset']}")
+                    logger.info(f"  Date Range: {metadata['start_date']} to {metadata['end_date']}")
+                    logger.info(f"  Data Points: {metadata['data_points']}")
+                
+            else:
+                # Use local data file
+                if not args.data_file:
+                    logger.error("For backtesting, either provide --data-file or use --historical-symbol with --start-date and --end-date")
+                    sys.exit(1)
+                
+                # Load historical data
+                try:
+                    import pandas as pd
+                    data = pd.read_csv(args.data_file)
+                    logger.info(f"Loaded {len(data)} data points from {args.data_file}")
+                except Exception as e:
+                    logger.error(f"Failed to load data file: {e}")
+                    sys.exit(1)
+                
+                # Run backtest
+                results = run_backtest_with_regime_analysis(
+                    historical_data=data,
+                    window_config=window_config,
+                    account_size=args.account_size,
+                    rotation_period=args.rotation_period if args.enable_advanced_strikes else 0,
+                    force_top_ranked=args.force_top_ranked,
+                    exit_config=exit_config,
+                    regime_clusters=args.regime_clusters,
+                    min_trades_per_regime=args.min_trades_per_regime
+                )
             
             # Display results
             logger.info("Backtest Results:")
