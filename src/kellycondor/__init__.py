@@ -16,7 +16,7 @@ from .execution import (
     WindowAwareIBKRTradeExecutor,
     IronCondorOrder,
     run_paper_trade,
-    run_backtest_with_advanced_strikes
+    run_backtest_with_exit_rules
 )
 from .entry_windows import (
     EntryWindow,
@@ -37,6 +37,17 @@ from .strike_selector import (
     create_rotating_strike_selector,
     create_custom_strike_selector
 )
+from .exit_rules import (
+    ExitRuleManager,
+    ExitRule,
+    ExitTrigger,
+    ExitReason,
+    ExitDecision,
+    ExitRuleBacktester,
+    create_default_exit_manager,
+    create_custom_exit_manager,
+    create_exit_backtester
+)
 
 __all__ = [
     "Processor", 
@@ -49,7 +60,7 @@ __all__ = [
     "WindowAwareIBKRTradeExecutor",
     "IronCondorOrder",
     "run_paper_trade",
-    "run_backtest_with_advanced_strikes",
+    "run_backtest_with_exit_rules",
     "EntryWindow",
     "EntryWindowManager", 
     "WindowAwareProcessor",
@@ -64,5 +75,14 @@ __all__ = [
     "IVPercentile",
     "create_default_strike_selector",
     "create_rotating_strike_selector",
-    "create_custom_strike_selector"
+    "create_custom_strike_selector",
+    "ExitRuleManager",
+    "ExitRule",
+    "ExitTrigger",
+    "ExitReason",
+    "ExitDecision",
+    "ExitRuleBacktester",
+    "create_default_exit_manager",
+    "create_custom_exit_manager",
+    "create_exit_backtester"
 ] 

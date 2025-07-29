@@ -8,7 +8,7 @@ import logging
 import sys
 import json
 from typing import List, Dict, Any
-from .execution import run_paper_trade, run_backtest_with_advanced_strikes
+from .execution import run_paper_trade, run_backtest_with_exit_rules
 
 
 def parse_window_config(config_str: str) -> List[Dict[str, Any]]:
@@ -89,11 +89,20 @@ Examples:
   # Paper trade forcing top-ranked combinations
   kelly-live --paper --enable-advanced-strikes --force-top-ranked
   
-  # Backtest with advanced strike selection
-  kelly-live --backtest --enable-advanced-strikes --data-file historical_data.csv
+  # Paper trade with dynamic exit rules
+  kelly-live --paper --enable-exit-rules
   
-  # Backtest with rotating strikes and windows
-  kelly-live --backtest --enable-windows --enable-advanced-strikes --rotation-period 5 --data-file data.csv
+  # Paper trade with custom exit configuration
+  kelly-live --paper --enable-exit-rules --exit-config exit_rules.json
+  
+  # Combine all features
+  kelly-live --paper --enable-windows --enable-advanced-strikes --enable-exit-rules
+  
+  # Backtest with exit rule comparison
+  kelly-live --backtest --enable-exit-rules --data-file historical_data.csv
+  
+  # Backtest with custom exit configuration
+  kelly-live --backtest --enable-exit-rules --exit-config custom_exits.json --data-file data.csv
         """
     )
     
@@ -196,6 +205,25 @@ Examples:
         help="Strike selection configuration file"
     )
     
+    # Exit rule arguments
+    parser.add_argument(
+        "--enable-exit-rules",
+        action="store_true",
+        help="Enable dynamic exit rules (IV contraction, theta decay, trailing PnL)"
+    )
+    
+    parser.add_argument(
+        "--exit-config",
+        type=str,
+        help="Exit rule configuration file"
+    )
+    
+    parser.add_argument(
+        "--disable-exit-rules",
+        action="store_true",
+        help="Disable exit rules (default)"
+    )
+    
     # Backtesting arguments
     parser.add_argument(
         "--data-file",
@@ -257,6 +285,17 @@ Examples:
             logger.error(f"Failed to parse strike configuration: {e}")
             sys.exit(1)
     
+    # Parse exit rule configuration
+    exit_config = None
+    if args.exit_config:
+        try:
+            with open(args.exit_config, 'r') as f:
+                exit_config = json.load(f)
+            logger.info(f"Loaded custom exit configuration: {len(exit_config)} rules")
+        except Exception as e:
+            logger.error(f"Failed to parse exit configuration: {e}")
+            sys.exit(1)
+    
     # Validate arguments
     if args.backtest and not args.data_file:
         logger.error("Backtest mode requires --data-file")
@@ -289,6 +328,9 @@ Examples:
             logger.info(f"  Rotation Period: {args.rotation_period}")
         if args.force_top_ranked:
             logger.info("  Force Top-Ranked: Enabled")
+    logger.info(f"  Exit Rules: {'Enabled' if args.enable_exit_rules else 'Disabled'}")
+    if args.enable_exit_rules and exit_config:
+        logger.info(f"  Exit Config: {len(exit_config)} rules")
     logger.info(f"  Dry Run: {args.dry_run}")
     
     try:
@@ -299,6 +341,7 @@ Examples:
             enable_advanced_strikes = args.enable_advanced_strikes
             rotation_period = args.rotation_period if args.enable_advanced_strikes else 0
             force_top_ranked = args.force_top_ranked
+            enable_exit_rules = args.enable_exit_rules
             
             if args.paper:
                 logger.info("Starting paper trading session...")
@@ -316,11 +359,13 @@ Examples:
                 window_config=window_config,
                 enable_advanced_strikes=enable_advanced_strikes,
                 rotation_period=rotation_period,
-                force_top_ranked=force_top_ranked
+                force_top_ranked=force_top_ranked,
+                enable_exit_rules=enable_exit_rules,
+                exit_config=exit_config
             )
             
         elif args.backtest:
-            logger.info("Starting backtest with advanced strike selection...")
+            logger.info("Starting backtest with exit rule comparison...")
             
             # Load historical data
             try:
@@ -332,36 +377,45 @@ Examples:
                 sys.exit(1)
             
             # Run backtest
-            results = run_backtest_with_advanced_strikes(
+            results = run_backtest_with_exit_rules(
                 historical_data=data,
                 window_config=window_config,
                 account_size=args.account_size,
                 rotation_period=args.rotation_period if args.enable_advanced_strikes else 0,
-                force_top_ranked=args.force_top_ranked
+                force_top_ranked=args.force_top_ranked,
+                exit_config=exit_config
             )
             
             # Display results
             logger.info("Backtest Results:")
-            logger.info(f"  Total Trades: {results['total_trades']}")
             
-            if args.enable_windows:
-                logger.info("\nWindow Performance:")
-                for window_name, performance in results['window_performance'].items():
-                    logger.info(f"  {window_name}:")
-                    logger.info(f"    Trades: {performance['trades_placed']}")
-                    logger.info(f"    Total PnL: ${performance['total_pnl']:.2f}")
-                    logger.info(f"    Win Rate: {performance['win_rate']:.1%}")
-                    logger.info(f"    Avg Trade Size: ${performance['avg_trade_size']:.2f}")
+            # Display comparison report
+            if "comparison_report" in results:
+                logger.info("\n" + results["comparison_report"])
             
-            if args.enable_advanced_strikes:
-                logger.info("\nStrike Selection Performance:")
-                for combination, score in results['top_combinations']:
-                    performance = results['strike_performance'].get(combination, {})
-                    logger.info(f"  {combination}:")
-                    logger.info(f"    Score: {score:.3f}")
-                    logger.info(f"    Trades: {performance.get('trades', 0)}")
-                    logger.info(f"    Win Rate: {performance.get('win_rate', 0.0):.1%}")
-                    logger.info(f"    Avg PnL: ${performance.get('avg_pnl', 0.0):.2f}")
+            # Display detailed results for each configuration
+            for config_name, config_data in results.items():
+                if config_name == "comparison_report":
+                    continue
+                    
+                logger.info(f"\nConfiguration: {config_name}")
+                logger.info(f"  Total PnL: ${config_data['total_pnl']:.2f}")
+                logger.info(f"  Win Rate: {config_data['win_rate']:.1%}")
+                logger.info(f"  Max Drawdown: ${config_data['max_drawdown']:.2f}")
+                logger.info(f"  Total Trades: {len(config_data['trades'])}")
+                logger.info(f"  Avg Trade PnL: ${config_data.get('avg_trade_pnl', 0.0):.2f}")
+                logger.info(f"  Sharpe Ratio: {config_data.get('sharpe_ratio', 0.0):.3f}")
+                logger.info(f"  Max Profit: ${config_data.get('max_profit', 0.0):.2f}")
+                logger.info(f"  Max Loss: ${config_data.get('max_loss', 0.0):.2f}")
+                
+                # Exit reason breakdown
+                exit_counts = {}
+                for reason in config_data.get("exit_reasons", []):
+                    exit_counts[reason] = exit_counts.get(reason, 0) + 1
+                
+                logger.info("  Exit Reasons:")
+                for reason, count in exit_counts.items():
+                    logger.info(f"    {reason}: {count}")
             
             # Save results if output file specified
             if args.output_file:

@@ -33,6 +33,15 @@ from .strike_selector import (
     create_default_strike_selector,
     create_rotating_strike_selector
 )
+from .exit_rules import (
+    ExitRuleManager,
+    ExitRule,
+    ExitTrigger,
+    ExitReason,
+    ExitDecision,
+    create_default_exit_manager,
+    create_custom_exit_manager
+)
 
 
 @dataclass
@@ -195,12 +204,14 @@ class IBKRTradeExecutor:
     
     def __init__(self, client: IBKRClient, processor: Processor, sizer: KellySizer, 
                  window_manager: EntryWindowManager = None, 
-                 strike_selector: AdvancedStrikeSelector = None):
+                 strike_selector: AdvancedStrikeSelector = None,
+                 exit_manager: ExitRuleManager = None):
         self.client = client
         self.processor = processor
         self.sizer = sizer
         self.window_manager = window_manager
         self.strike_selector = strike_selector or create_default_strike_selector()
+        self.exit_manager = exit_manager or create_default_exit_manager()
         self.active_orders = {}
         self.trade_history = []
         self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
@@ -236,6 +247,9 @@ class IBKRTradeExecutor:
             if window_name:
                 order.window_name = window_name
             
+            # Add position to exit manager
+            self._add_position_to_exit_manager(order)
+            
             self._log_trade_to_redis(order)
             
             # Record trade in window manager
@@ -245,6 +259,87 @@ class IBKRTradeExecutor:
             
             return order
         return None
+    
+    def _add_position_to_exit_manager(self, order: IronCondorOrder):
+        """Add a position to the exit manager for tracking."""
+        entry_data = {
+            "order_id": order.order_id,
+            "symbol": order.symbol,
+            "call_strike": order.call_strike,
+            "put_strike": order.put_strike,
+            "call_spread": order.call_spread,
+            "put_spread": order.put_spread,
+            "quantity": order.quantity,
+            "entry_iv": getattr(self.processor, 'current_iv_rank', 0.5),
+            "entry_skew": getattr(self.processor, 'current_skew', 0.0),
+            "entry_time": datetime.now(),
+            "expiry_time": datetime.now() + timedelta(days=30),  # Would get from order
+            "window_name": order.window_name
+        }
+        
+        if hasattr(order, 'selection_metadata'):
+            entry_data.update(order.selection_metadata)
+        
+        self.exit_manager.add_position(str(order.order_id), entry_data)
+        logging.info(f"Added position {order.order_id} to exit manager")
+    
+    def check_exit_conditions(self, current_data: Dict[str, Any]) -> List[ExitDecision]:
+        """Check exit conditions for all active positions."""
+        return self.exit_manager.evaluate_exits(current_data)
+    
+    def close_position(self, order_id: int, exit_decision: ExitDecision):
+        """Close a position based on exit decision."""
+        if order_id not in self.active_orders:
+            logging.warning(f"Order {order_id} not found in active orders")
+            return False
+        
+        order = self.active_orders[order_id]
+        
+        # Create closing order (opposite of original)
+        # This is a simplified version - in practice you'd create proper closing contracts
+        try:
+            # Log the exit
+            logging.info(f"Closing position {order_id} due to {exit_decision.reason.value}: {exit_decision.reasoning}")
+            
+            # Update order status
+            order.status = "CLOSED"
+            order.fill_price = 0.0  # Would get from market
+            
+            # Remove from active orders
+            del self.active_orders[order_id]
+            
+            # Remove from exit manager
+            self.exit_manager.remove_position(str(order_id))
+            
+            # Update Redis
+            self._update_trade_in_redis(order, exit_decision)
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"Failed to close position {order_id}: {e}")
+            return False
+    
+    def _update_trade_in_redis(self, order: IronCondorOrder, exit_decision: ExitDecision):
+        """Update trade in Redis with exit information."""
+        try:
+            trade_key = f"trade:{order.order_id}"
+            
+            # Update existing trade data
+            update_data = {
+                "status": "CLOSED",
+                "exit_time": datetime.now().isoformat(),
+                "exit_reason": exit_decision.reason.value,
+                "exit_trigger": exit_decision.trigger.value,
+                "exit_reasoning": exit_decision.reasoning,
+                "exit_pnl": exit_decision.current_value
+            }
+            
+            self.redis_client.hmset(trade_key, update_data)
+            logging.info(f"Updated trade {order.order_id} in Redis with exit data")
+            
+        except Exception as e:
+            logging.error(f"Failed to update trade in Redis: {e}")
     
     def _log_trade_to_redis(self, order: IronCondorOrder):
         """Log trade details to Redis for monitoring."""
@@ -488,8 +583,9 @@ class WindowAwareIBKRTradeExecutor(IBKRTradeExecutor):
     
     def __init__(self, client: IBKRClient, processor: WindowAwareProcessor, 
                  sizer: WindowAwareSizer, window_manager: EntryWindowManager,
-                 strike_selector: AdvancedStrikeSelector = None):
-        super().__init__(client, processor, sizer, window_manager, strike_selector)
+                 strike_selector: AdvancedStrikeSelector = None,
+                 exit_manager: ExitRuleManager = None):
+        super().__init__(client, processor, sizer, window_manager, strike_selector, exit_manager)
         self.window_processor = processor
         self.window_sizer = sizer
         
@@ -528,14 +624,22 @@ class WindowAwareIBKRTradeExecutor(IBKRTradeExecutor):
             summary += f"  Avg PnL: ${performance.get('avg_pnl', 0.0):.2f}\n"
         
         return summary
+    
+    def get_exit_rule_summary(self) -> str:
+        """Get a summary of exit rule performance."""
+        if not self.exit_manager:
+            return "No exit manager configured"
+        
+        return self.exit_manager.get_exit_summary()
 
 
 def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 7497, 
                    client_id: int = 1, simulation_mode: bool = False,
                    enable_windows: bool = True, window_config: List[Dict[str, any]] = None,
                    enable_advanced_strikes: bool = True, rotation_period: int = 5,
-                   force_top_ranked: bool = False):
-    """Main entry point for paper trading with optional entry window and advanced strike selection support."""
+                   force_top_ranked: bool = False, enable_exit_rules: bool = True,
+                   exit_config: List[Dict[str, any]] = None):
+    """Main entry point for paper trading with optional entry window, advanced strike selection, and exit rules support."""
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     
@@ -598,11 +702,47 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
             strike_selector = create_default_strike_selector()
             logger.info("Advanced strike selection enabled")
     
+    # Initialize exit manager
+    exit_manager = None
+    if enable_exit_rules:
+        if exit_config:
+            # Create custom exit rules from configuration
+            from .exit_rules import ExitRule, ExitTrigger
+            rules = []
+            for config in exit_config:
+                rule = ExitRule(
+                    name=config["name"],
+                    trigger=ExitTrigger(config["trigger"]),
+                    threshold=config["threshold"],
+                    enabled=config.get("enabled", True),
+                    priority=config.get("priority", 1)
+                )
+                # Add specific parameters based on trigger type
+                if config["trigger"] == "time_based":
+                    rule.time_before_expiry = timedelta(hours=config.get("time_before_expiry_hours", 2))
+                elif config["trigger"] == "iv_contraction":
+                    rule.iv_contraction_threshold = config.get("iv_contraction_threshold", 0.3)
+                elif config["trigger"] == "theta_decay":
+                    rule.theta_decay_threshold = config.get("theta_decay_threshold", 0.7)
+                elif config["trigger"] == "trailing_pnl":
+                    rule.trailing_stop_distance = config.get("trailing_stop_distance", 50)
+                    rule.trailing_stop_activation = config.get("trailing_stop_activation", 100)
+                    rule.max_profit_take = config.get("max_profit_take", 200)
+                    rule.max_loss_stop = config.get("max_loss_stop", -100)
+                
+                rules.append(rule)
+            
+            exit_manager = create_custom_exit_manager(rules)
+            logger.info(f"Custom exit rules enabled: {len(rules)} rules")
+        else:
+            exit_manager = create_default_exit_manager()
+            logger.info("Default exit rules enabled")
+    
     # Initialize executor
     if enable_windows:
-        executor = WindowAwareIBKRTradeExecutor(ibkr, processor, sizer, window_manager, strike_selector)
+        executor = WindowAwareIBKRTradeExecutor(ibkr, processor, sizer, window_manager, strike_selector, exit_manager)
     else:
-        executor = IBKRTradeExecutor(ibkr, processor, sizer, strike_selector)
+        executor = IBKRTradeExecutor(ibkr, processor, sizer, strike_selector, exit_manager)
     
     # Initialize data stream
     stream = DatabentoStream(api_key or "demo_key")
@@ -612,6 +752,22 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
     try:
         for tick in stream.stream_iv_and_skew():
             processor.process_tick(tick)
+            
+            # Check exit conditions for existing positions
+            if enable_exit_rules and exit_manager:
+                current_data = {
+                    "current_iv": getattr(processor, 'current_iv_rank', 0.5),
+                    "current_skew": getattr(processor, 'current_skew', 0.0),
+                    "current_pnl": 0.0,  # Would get from position tracking
+                    "timestamp": datetime.now()
+                }
+                
+                exit_decisions = executor.check_exit_conditions(current_data)
+                for decision in exit_decisions:
+                    # Extract order ID from position ID
+                    order_id = int(decision.trigger.value.split("_")[-1]) if "_" in decision.trigger.value else None
+                    if order_id:
+                        executor.close_position(order_id, decision)
             
             # Check if we should submit a trade (with window awareness)
             if enable_windows:
@@ -644,6 +800,9 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
                 
                 if enable_advanced_strikes and hasattr(executor, 'get_strike_selection_summary'):
                     logger.info(executor.get_strike_selection_summary())
+                
+                if enable_exit_rules and hasattr(executor, 'get_exit_rule_summary'):
+                    logger.info(executor.get_exit_rule_summary())
             
     except KeyboardInterrupt:
         logger.info("Stopping paper trading session...")
@@ -666,13 +825,15 @@ def _check_order_status(executor: IBKRTradeExecutor):
             del executor.active_orders[order_id]
 
 
-def run_backtest_with_advanced_strikes(historical_data: pd.DataFrame, 
-                                      window_config: List[Dict[str, any]] = None,
-                                      account_size: float = 100000,
-                                      rotation_period: int = 5,
-                                      force_top_ranked: bool = False) -> Dict[str, any]:
-    """Run backtest with advanced strike selection and entry window analysis."""
+def run_backtest_with_exit_rules(historical_data: pd.DataFrame, 
+                                window_config: List[Dict[str, any]] = None,
+                                account_size: float = 100000,
+                                rotation_period: int = 5,
+                                force_top_ranked: bool = False,
+                                exit_config: List[Dict[str, any]] = None) -> Dict[str, any]:
+    """Run backtest with advanced strike selection, entry windows, and exit rules."""
     from .entry_windows import create_custom_window_manager
+    from .exit_rules import ExitRuleBacktester, ExitRule, ExitTrigger
     
     # Create window manager
     if window_config:
@@ -702,87 +863,113 @@ def run_backtest_with_advanced_strikes(historical_data: pd.DataFrame,
     else:
         strike_selector = create_default_strike_selector()
     
-    # Simulate trading with advanced strike selection
-    trades = []
+    # Create exit rule backtester
+    backtester = ExitRuleBacktester()
+    
+    # Add different exit configurations to test
+    if exit_config:
+        # Test custom exit configuration
+        custom_rules = []
+        for config in exit_config:
+            rule = ExitRule(
+                name=config["name"],
+                trigger=ExitTrigger(config["trigger"]),
+                threshold=config["threshold"],
+                enabled=config.get("enabled", True),
+                priority=config.get("priority", 1)
+            )
+            custom_rules.append(rule)
+        
+        backtester.add_exit_configuration("Custom Exit Rules", custom_rules)
+    else:
+        # Test default configurations
+        from .exit_rules import create_default_exit_manager
+        default_manager = create_default_exit_manager()
+        backtester.add_exit_configuration("Default Exit Rules", default_manager.rules)
+        
+        # Test time-based only
+        time_only_rules = [
+            ExitRule(
+                name="Time-Based Only",
+                trigger=ExitTrigger.TIME_BASED,
+                threshold=0.0,
+                time_before_expiry=timedelta(hours=2),
+                priority=1
+            )
+        ]
+        backtester.add_exit_configuration("Time-Based Only", time_only_rules)
+        
+        # Test aggressive exit rules
+        aggressive_rules = [
+            ExitRule(
+                name="Aggressive IV Contraction",
+                trigger=ExitTrigger.IV_CONTRACTION,
+                threshold=0.2,  # 20% IV contraction
+                iv_contraction_threshold=0.2,
+                priority=1
+            ),
+            ExitRule(
+                name="Aggressive Theta Decay",
+                trigger=ExitTrigger.THETA_DECAY,
+                threshold=0.5,  # 50% theta decay
+                theta_decay_threshold=0.5,
+                priority=2
+            ),
+            ExitRule(
+                name="Tight Trailing Stop",
+                trigger=ExitTrigger.TRAILING_PNL,
+                threshold=0.0,
+                trailing_stop_distance=25,  # 25 points
+                trailing_stop_activation=50,  # Activate at $50 profit
+                max_profit_take=100,  # Take profit at $100
+                max_loss_stop=-50,  # Stop loss at -$50
+                priority=3
+            )
+        ]
+        backtester.add_exit_configuration("Aggressive Exit Rules", aggressive_rules)
+    
+    # Generate entry signals
+    entry_signals = []
     current_time = datetime.now()
     
     for _, row in historical_data.iterrows():
-        # Simulate tick data
-        tick_data = {
-            "symbol": "SPX",
-            "strike": row.get("strike", 4500),
-            "expiry": "20241220",
-            "iv": row.get("iv", 0.25),
-            "type": "C",
-            "timestamp": current_time
-        }
-        
-        window_processor.process_tick(tick_data)
-        
-        # Check if we should trade
-        should_trade, window_name = window_processor.should_trade(current_time)
-        
-        if should_trade:
-            # Get current market conditions
-            current_price = row.get("price", 4500)
-            current_iv = processor.current_iv_rank
-            current_skew = processor.current_skew
-            
-            # Select strikes using advanced selector
-            if isinstance(strike_selector, RotatingStrikeSelector):
-                selection_result = strike_selector.select_rotating_strikes(
-                    current_price, current_iv, current_skew
-                )
-            else:
-                selection_result = strike_selector.select_optimal_strikes(
-                    current_price, current_iv, current_skew, force_top_ranked=force_top_ranked
-                )
-            
-            # Get sizing
-            sizing = window_sizer.size_position(
-                current_iv, current_skew, account_size, window_name
-            )
-            
-            # Simulate trade
-            trade = {
+        # Simulate entry conditions
+        if np.random.random() < 0.1:  # 10% chance of entry
+            entry_signal = {
+                "price": row.get("price", 4500),
+                "iv": row.get("iv", 0.25),
                 "timestamp": current_time,
-                "window": window_name,
-                "iv_rank": current_iv,
-                "skew": current_skew,
-                "position_size": sizing["position_size"],
-                "call_strike": selection_result.call_strike,
-                "put_strike": selection_result.put_strike,
-                "wing_distance": selection_result.wing_distance,
-                "iv_percentile": selection_result.iv_percentile.value,
-                "skew_bucket": selection_result.skew_bucket.value,
-                "selection_score": selection_result.selection_score,
-                "pnl": 0.0  # Would be calculated based on exit
+                "expiry_time": current_time + timedelta(days=30)
             }
-            
-            trades.append(trade)
-            
-            # Record in window manager
-            window_manager.record_trade(window_name, 0.0, sizing["position_size"])
-            
-            # Update strike selector performance (simulate PnL)
-            simulated_pnl = np.random.normal(50, 100)  # Simulate PnL
-            win = simulated_pnl > 0
-            strike_selector.update_performance(selection_result, simulated_pnl, win, sizing["position_size"])
+            entry_signals.append(entry_signal)
         
-        current_time += timedelta(minutes=1)
+        current_time += timedelta(hours=1)
     
-    # Calculate performance metrics
-    window_performance = window_manager.get_all_performance()
-    strike_performance = strike_selector.historical_performance
+    # Run backtest
+    results = backtester.run_backtest(historical_data, entry_signals)
     
-    return {
-        "trades": trades,
-        "window_performance": window_performance,
-        "strike_performance": strike_performance,
-        "total_trades": len(trades),
-        "window_summary": window_manager.get_window_summary(),
-        "top_combinations": strike_selector.get_top_ranked_combinations()
-    }
+    # Add additional analysis
+    for config_name, config_data in results.items():
+        # Calculate additional metrics
+        trades = config_data["trades"]
+        if trades:
+            pnls = [trade["pnl"] for trade in trades]
+            config_data["avg_trade_pnl"] = np.mean(pnls)
+            config_data["std_trade_pnl"] = np.std(pnls)
+            config_data["sharpe_ratio"] = config_data["avg_trade_pnl"] / config_data["std_trade_pnl"] if config_data["std_trade_pnl"] > 0 else 0.0
+            config_data["max_profit"] = max(pnls)
+            config_data["max_loss"] = min(pnls)
+        else:
+            config_data["avg_trade_pnl"] = 0.0
+            config_data["std_trade_pnl"] = 0.0
+            config_data["sharpe_ratio"] = 0.0
+            config_data["max_profit"] = 0.0
+            config_data["max_loss"] = 0.0
+    
+    # Add comparison report
+    results["comparison_report"] = backtester.compare_configurations()
+    
+    return results
 
 
 if __name__ == "__main__":
