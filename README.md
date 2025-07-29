@@ -60,6 +60,73 @@ Then open your browser to `http://localhost:8050`
 python -m kellycondor.replay --account-size 100000
 ```
 
+### 📈 Live Paper Trading
+
+KellyCondor supports live paper trading through Interactive Brokers. Here's how to get started:
+
+#### Prerequisites
+
+1. **Install TWS or IB Gateway**
+   - Download from [Interactive Brokers](https://www.interactivebrokers.com/en/trading/tws.php)
+   - Enable API connections in TWS settings
+   - Set port to 7496 for paper trading
+
+2. **Configure API Permissions**
+   - In TWS: File → Global Configuration → API → Settings
+   - Enable "Enable ActiveX and Socket Clients"
+   - Add your IP to "Trusted IPs" or check "Allow connections from localhost"
+
+#### Running Paper Trading
+
+```bash
+# Basic paper trading
+kelly-live --paper
+
+# Custom configuration
+kelly-live --paper --host 127.0.0.1 --port 7496 --account-size 50000
+
+# Simulation mode (no IBKR connection)
+kelly-live --simulate
+
+# Verbose logging
+kelly-live --paper --verbose
+```
+
+#### Paper Trading Workflow
+
+1. **Launch TWS in Paper Mode**
+   ```bash
+   # TWS should be running on port 7496 for paper trading
+   # Make sure API connections are enabled
+   ```
+
+2. **Start KellyCondor**
+   ```bash
+   kelly-live --paper --verbose
+   ```
+
+3. **Monitor in Dashboard**
+   ```bash
+   # In another terminal
+   python dashboard/app.py
+   # Open http://localhost:8050
+   ```
+
+4. **Check Order Status**
+   - Orders will be logged to console
+   - Dashboard shows real-time updates
+   - TWS shows order status and fills
+
+#### Configuration Options
+
+- `--paper`: Enable paper trading mode
+- `--simulate`: Run in simulation mode (no orders)
+- `--host`: IBKR host (default: 127.0.0.1)
+- `--port`: IBKR port (7496=paper, 7497=live)
+- `--account-size`: Account size for Kelly sizing
+- `--verbose`: Enable detailed logging
+- `--dry-run`: Test without submitting orders
+
 ## 📁 Project Structure
 
 ```

@@ -31,6 +31,7 @@ setup(
     entry_points={
         "console_scripts": [
             "kelly-replay=kellycondor.replay:main",
+            "kelly-live=kellycondor.cli:main",
         ]
     },
     python_requires=">=3.11",
