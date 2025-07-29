@@ -42,6 +42,12 @@ from .exit_rules import (
     create_default_exit_manager,
     create_custom_exit_manager
 )
+from .regime_analyzer import (
+    RegimeAnalyzer,
+    RegimeAwareSizer,
+    create_regime_analyzer,
+    create_regime_aware_sizer
+)
 
 
 @dataclass
@@ -205,16 +211,28 @@ class IBKRTradeExecutor:
     def __init__(self, client: IBKRClient, processor: Processor, sizer: KellySizer, 
                  window_manager: EntryWindowManager = None, 
                  strike_selector: AdvancedStrikeSelector = None,
-                 exit_manager: ExitRuleManager = None):
+                 exit_manager: ExitRuleManager = None,
+                 regime_analyzer: RegimeAnalyzer = None):
         self.client = client
         self.processor = processor
         self.sizer = sizer
         self.window_manager = window_manager
         self.strike_selector = strike_selector or create_default_strike_selector()
         self.exit_manager = exit_manager or create_default_exit_manager()
+        self.regime_analyzer = regime_analyzer
         self.active_orders = {}
         self.trade_history = []
         self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
+        
+        # Initialize regime-aware sizer if regime analyzer is provided
+        if self.regime_analyzer and not isinstance(self.sizer, RegimeAwareSizer):
+            self.sizer = create_regime_aware_sizer(self.sizer, self.regime_analyzer)
+        
+    def update_regime(self, current_volatility: float, current_drift: float):
+        """Update the current market regime."""
+        if isinstance(self.sizer, RegimeAwareSizer):
+            self.sizer.update_regime(current_volatility, current_drift)
+            logging.info(f"Updated regime - Volatility: {current_volatility:.3f}, Drift: {current_drift:.3f}")
         
     def submit_iron_condor(self, symbol: str = "SPX", expiry: str = None, 
                           window_name: str = None, current_price: float = None,
@@ -224,16 +242,34 @@ class IBKRTradeExecutor:
             logging.error("IBKR client not connected")
             return None
             
-        # Get current sizing with window awareness
-        if isinstance(self.sizer, WindowAwareSizer) and window_name:
-            sizing = self.sizer.size_position(
-                self.processor.current_iv_rank,
-                self.processor.current_skew,
-                self.sizer.account_size,
-                window_name
-            )
+        # Get current sizing with regime awareness
+        if isinstance(self.sizer, RegimeAwareSizer):
+            # Update regime based on current market conditions
+            current_volatility = getattr(self.processor, 'current_iv_rank', 0.5)
+            current_drift = getattr(self.processor, 'current_skew', 0.0)
+            self.update_regime(current_volatility, current_drift)
+            
+            # Get regime-aware sizing
+            if isinstance(self.sizer, WindowAwareSizer) and window_name:
+                sizing = self.sizer.size_position(
+                    self.processor.current_iv_rank,
+                    self.processor.current_skew,
+                    self.sizer.account_size,
+                    window_name
+                )
+            else:
+                sizing = self.sizer.get_current_sizing()
         else:
-            sizing = self.sizer.get_current_sizing()
+            # Use standard sizing
+            if isinstance(self.sizer, WindowAwareSizer) and window_name:
+                sizing = self.sizer.size_position(
+                    self.processor.current_iv_rank,
+                    self.processor.current_skew,
+                    self.sizer.account_size,
+                    window_name
+                )
+            else:
+                sizing = self.sizer.get_current_sizing()
         
         # Create iron condor order with advanced strike selection
         order = self._create_iron_condor_order_advanced(symbol, expiry, sizing, current_price, force_top_ranked)
@@ -246,6 +282,12 @@ class IBKRTradeExecutor:
             # Add window information to order
             if window_name:
                 order.window_name = window_name
+            
+            # Add regime information to order
+            if isinstance(self.sizer, RegimeAwareSizer) and hasattr(self.sizer, 'current_sizing_params'):
+                if self.sizer.current_sizing_params:
+                    order.regime_type = self.sizer.current_sizing_params.regime_type.value
+                    order.regime_confidence = self.sizer.current_sizing_params.confidence
             
             # Add position to exit manager
             self._add_position_to_exit_manager(order)
@@ -584,8 +626,9 @@ class WindowAwareIBKRTradeExecutor(IBKRTradeExecutor):
     def __init__(self, client: IBKRClient, processor: WindowAwareProcessor, 
                  sizer: WindowAwareSizer, window_manager: EntryWindowManager,
                  strike_selector: AdvancedStrikeSelector = None,
-                 exit_manager: ExitRuleManager = None):
-        super().__init__(client, processor, sizer, window_manager, strike_selector, exit_manager)
+                 exit_manager: ExitRuleManager = None,
+                 regime_analyzer: RegimeAnalyzer = None):
+        super().__init__(client, processor, sizer, window_manager, strike_selector, exit_manager, regime_analyzer)
         self.window_processor = processor
         self.window_sizer = sizer
         
@@ -632,14 +675,22 @@ class WindowAwareIBKRTradeExecutor(IBKRTradeExecutor):
         
         return self.exit_manager.get_exit_summary()
 
+    def get_regime_summary(self) -> str:
+        """Get a summary of regime analysis."""
+        if not self.regime_analyzer:
+            return "No regime analyzer configured"
+        
+        return self.regime_analyzer.get_regime_summary()
+
 
 def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 7497, 
                    client_id: int = 1, simulation_mode: bool = False,
                    enable_windows: bool = True, window_config: List[Dict[str, any]] = None,
                    enable_advanced_strikes: bool = True, rotation_period: int = 5,
                    force_top_ranked: bool = False, enable_exit_rules: bool = True,
-                   exit_config: List[Dict[str, any]] = None):
-    """Main entry point for paper trading with optional entry window, advanced strike selection, and exit rules support."""
+                   exit_config: List[Dict[str, any]] = None, enable_regime_analysis: bool = True,
+                   regime_clusters: int = 6, min_trades_per_regime: int = 10):
+    """Main entry point for paper trading with optional entry window, advanced strike selection, exit rules, and regime analysis support."""
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     
@@ -672,6 +723,21 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
         "high_iv": 0.55
     }
     base_sizer = LiveKellySizer(base_proc, win_rate_table)
+    
+    # Initialize regime analyzer
+    regime_analyzer = None
+    if enable_regime_analysis:
+        regime_analyzer = create_regime_analyzer(
+            n_clusters=regime_clusters,
+            min_trades_per_cluster=min_trades_per_regime
+        )
+        logger.info("Regime analysis enabled")
+        
+        # Load historical trades for regime fitting (in practice, this would come from a database)
+        # For now, we'll simulate some historical trades
+        historical_trades = _generate_sample_trades(100)
+        regime_analyzer.fit_clusters(historical_trades)
+        logger.info("Fitted regime clusters to historical data")
     
     # Initialize window manager if enabled
     window_manager = None
@@ -740,9 +806,9 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
     
     # Initialize executor
     if enable_windows:
-        executor = WindowAwareIBKRTradeExecutor(ibkr, processor, sizer, window_manager, strike_selector, exit_manager)
+        executor = WindowAwareIBKRTradeExecutor(ibkr, processor, sizer, window_manager, strike_selector, exit_manager, regime_analyzer)
     else:
-        executor = IBKRTradeExecutor(ibkr, processor, sizer, strike_selector, exit_manager)
+        executor = IBKRTradeExecutor(ibkr, processor, sizer, strike_selector, exit_manager, regime_analyzer)
     
     # Initialize data stream
     stream = DatabentoStream(api_key or "demo_key")
@@ -752,6 +818,12 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
     try:
         for tick in stream.stream_iv_and_skew():
             processor.process_tick(tick)
+            
+            # Update regime analysis with current market conditions
+            if enable_regime_analysis and regime_analyzer:
+                current_volatility = getattr(processor, 'current_iv_rank', 0.5)
+                current_drift = getattr(processor, 'current_skew', 0.0)
+                executor.update_regime(current_volatility, current_drift)
             
             # Check exit conditions for existing positions
             if enable_exit_rules and exit_manager:
@@ -781,6 +853,8 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
                         logger.info(f"Submitted iron condor order in {window_name} window: {order}")
                         if hasattr(order, 'selection_metadata'):
                             logger.info(f"Strike selection: {order.selection_metadata['reasoning']}")
+                        if hasattr(order, 'regime_type'):
+                            logger.info(f"Regime: {order.regime_type} (confidence: {order.regime_confidence:.2f})")
             else:
                 # Original logic without windows
                 if _should_submit_trade(processor):
@@ -789,6 +863,8 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
                         logger.info(f"Submitted iron condor order: {order}")
                         if hasattr(order, 'selection_metadata'):
                             logger.info(f"Strike selection: {order.selection_metadata['reasoning']}")
+                        if hasattr(order, 'regime_type'):
+                            logger.info(f"Regime: {order.regime_type} (confidence: {order.regime_confidence:.2f})")
             
             # Check for order updates
             _check_order_status(executor)
@@ -803,6 +879,9 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
                 
                 if enable_exit_rules and hasattr(executor, 'get_exit_rule_summary'):
                     logger.info(executor.get_exit_rule_summary())
+                
+                if enable_regime_analysis and hasattr(executor, 'get_regime_summary'):
+                    logger.info(executor.get_regime_summary())
             
     except KeyboardInterrupt:
         logger.info("Stopping paper trading session...")
@@ -825,15 +904,59 @@ def _check_order_status(executor: IBKRTradeExecutor):
             del executor.active_orders[order_id]
 
 
-def run_backtest_with_exit_rules(historical_data: pd.DataFrame, 
-                                window_config: List[Dict[str, any]] = None,
-                                account_size: float = 100000,
-                                rotation_period: int = 5,
-                                force_top_ranked: bool = False,
-                                exit_config: List[Dict[str, any]] = None) -> Dict[str, any]:
-    """Run backtest with advanced strike selection, entry windows, and exit rules."""
+def _generate_sample_trades(n_trades: int) -> List[Dict[str, Any]]:
+    """Generate sample historical trades for regime analysis."""
+    trades = []
+    base_time = datetime.now() - timedelta(days=30)
+    
+    for i in range(n_trades):
+        # Generate trade with some randomness
+        np.random.seed(i)  # For reproducibility
+        
+        # Random trade parameters
+        entry_price = 4500 + np.random.normal(0, 50)
+        exit_price = entry_price + np.random.normal(0, 100)
+        holding_period = np.random.exponential(24)  # Average 24 hours
+        pnl = exit_price - entry_price + np.random.normal(0, 50)
+        
+        trade = {
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "pnl": pnl,
+            "holding_period": holding_period,
+            "timestamp": base_time + timedelta(hours=i),
+            "window": np.random.choice(["morning", "midday", "afternoon"]),
+            "iv_rank": np.random.uniform(0.2, 0.8),
+            "skew": np.random.uniform(-0.2, 0.2)
+        }
+        
+        trades.append(trade)
+    
+    return trades
+
+
+def run_backtest_with_regime_analysis(historical_data: pd.DataFrame, 
+                                    window_config: List[Dict[str, any]] = None,
+                                    account_size: float = 100000,
+                                    rotation_period: int = 5,
+                                    force_top_ranked: bool = False,
+                                    exit_config: List[Dict[str, any]] = None,
+                                    regime_clusters: int = 6,
+                                    min_trades_per_regime: int = 10) -> Dict[str, any]:
+    """Run backtest with regime analysis, advanced strike selection, entry windows, and exit rules."""
     from .entry_windows import create_custom_window_manager
     from .exit_rules import ExitRuleBacktester, ExitRule, ExitTrigger
+    from .regime_analyzer import create_regime_analyzer
+    
+    # Create regime analyzer
+    regime_analyzer = create_regime_analyzer(
+        n_clusters=regime_clusters,
+        min_trades_per_cluster=min_trades_per_regime
+    )
+    
+    # Generate sample historical trades for regime fitting
+    sample_trades = _generate_sample_trades(200)
+    regime_analyzer.fit_clusters(sample_trades)
     
     # Create window manager
     if window_config:
@@ -948,8 +1071,29 @@ def run_backtest_with_exit_rules(historical_data: pd.DataFrame,
     # Run backtest
     results = backtester.run_backtest(historical_data, entry_signals)
     
+    # Add regime analysis results
+    results["regime_analysis"] = {
+        "regime_summary": regime_analyzer.get_regime_summary(),
+        "best_regime": regime_analyzer.get_best_regime().regime_type.value if regime_analyzer.get_best_regime() else None,
+        "total_clusters": len(regime_analyzer.clusters),
+        "clusters": {
+            cluster_id: {
+                "regime_type": cluster.regime_type.value,
+                "trade_count": cluster.trade_count,
+                "win_rate": cluster.win_rate,
+                "sharpe_ratio": cluster.sharpe_ratio,
+                "avg_reward": cluster.avg_reward,
+                "avg_loss": cluster.avg_loss
+            }
+            for cluster_id, cluster in regime_analyzer.clusters.items()
+        }
+    }
+    
     # Add additional analysis
     for config_name, config_data in results.items():
+        if config_name == "regime_analysis":
+            continue
+            
         # Calculate additional metrics
         trades = config_data["trades"]
         if trades:

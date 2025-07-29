@@ -8,7 +8,7 @@ import logging
 import sys
 import json
 from typing import List, Dict, Any
-from .execution import run_paper_trade, run_backtest_with_exit_rules
+from .execution import run_paper_trade, run_backtest_with_regime_analysis
 
 
 def parse_window_config(config_str: str) -> List[Dict[str, Any]]:
@@ -95,14 +95,23 @@ Examples:
   # Paper trade with custom exit configuration
   kelly-live --paper --enable-exit-rules --exit-config exit_rules.json
   
+  # Paper trade with regime analysis
+  kelly-live --paper --enable-regime-analysis
+  
+  # Paper trade with custom regime clustering
+  kelly-live --paper --enable-regime-analysis --regime-clusters 8 --min-trades-per-regime 15
+  
   # Combine all features
-  kelly-live --paper --enable-windows --enable-advanced-strikes --enable-exit-rules
+  kelly-live --paper --enable-windows --enable-advanced-strikes --enable-exit-rules --enable-regime-analysis
   
-  # Backtest with exit rule comparison
-  kelly-live --backtest --enable-exit-rules --data-file historical_data.csv
+  # Backtest with regime analysis
+  kelly-live --backtest --enable-regime-analysis --data-file historical_data.csv
   
-  # Backtest with custom exit configuration
-  kelly-live --backtest --enable-exit-rules --exit-config custom_exits.json --data-file data.csv
+  # Backtest with custom regime configuration
+  kelly-live --backtest --enable-regime-analysis --regime-clusters 10 --data-file data.csv
+  
+  # Backtest with all features
+  kelly-live --backtest --enable-windows --enable-advanced-strikes --enable-exit-rules --enable-regime-analysis --data-file data.csv
         """
     )
     
@@ -224,6 +233,33 @@ Examples:
         help="Disable exit rules (default)"
     )
     
+    # Regime analysis arguments
+    parser.add_argument(
+        "--enable-regime-analysis",
+        action="store_true",
+        help="Enable regime analysis with clustering by realized volatility and directional drift"
+    )
+    
+    parser.add_argument(
+        "--regime-clusters",
+        type=int,
+        default=6,
+        help="Number of regime clusters (default: 6)"
+    )
+    
+    parser.add_argument(
+        "--min-trades-per-regime",
+        type=int,
+        default=10,
+        help="Minimum trades per regime cluster (default: 10)"
+    )
+    
+    parser.add_argument(
+        "--disable-regime-analysis",
+        action="store_true",
+        help="Disable regime analysis (default)"
+    )
+    
     # Backtesting arguments
     parser.add_argument(
         "--data-file",
@@ -331,6 +367,10 @@ Examples:
     logger.info(f"  Exit Rules: {'Enabled' if args.enable_exit_rules else 'Disabled'}")
     if args.enable_exit_rules and exit_config:
         logger.info(f"  Exit Config: {len(exit_config)} rules")
+    logger.info(f"  Regime Analysis: {'Enabled' if args.enable_regime_analysis else 'Disabled'}")
+    if args.enable_regime_analysis:
+        logger.info(f"  Regime Clusters: {args.regime_clusters}")
+        logger.info(f"  Min Trades per Regime: {args.min_trades_per_regime}")
     logger.info(f"  Dry Run: {args.dry_run}")
     
     try:
@@ -342,6 +382,9 @@ Examples:
             rotation_period = args.rotation_period if args.enable_advanced_strikes else 0
             force_top_ranked = args.force_top_ranked
             enable_exit_rules = args.enable_exit_rules
+            enable_regime_analysis = args.enable_regime_analysis
+            regime_clusters = args.regime_clusters
+            min_trades_per_regime = args.min_trades_per_regime
             
             if args.paper:
                 logger.info("Starting paper trading session...")
@@ -361,11 +404,14 @@ Examples:
                 rotation_period=rotation_period,
                 force_top_ranked=force_top_ranked,
                 enable_exit_rules=enable_exit_rules,
-                exit_config=exit_config
+                exit_config=exit_config,
+                enable_regime_analysis=enable_regime_analysis,
+                regime_clusters=regime_clusters,
+                min_trades_per_regime=min_trades_per_regime
             )
             
         elif args.backtest:
-            logger.info("Starting backtest with exit rule comparison...")
+            logger.info("Starting backtest with regime analysis...")
             
             # Load historical data
             try:
@@ -377,17 +423,35 @@ Examples:
                 sys.exit(1)
             
             # Run backtest
-            results = run_backtest_with_exit_rules(
+            results = run_backtest_with_regime_analysis(
                 historical_data=data,
                 window_config=window_config,
                 account_size=args.account_size,
                 rotation_period=args.rotation_period if args.enable_advanced_strikes else 0,
                 force_top_ranked=args.force_top_ranked,
-                exit_config=exit_config
+                exit_config=exit_config,
+                regime_clusters=args.regime_clusters,
+                min_trades_per_regime=args.min_trades_per_regime
             )
             
             # Display results
             logger.info("Backtest Results:")
+            
+            # Display regime analysis results
+            if "regime_analysis" in results:
+                regime_analysis = results["regime_analysis"]
+                logger.info("\nRegime Analysis:")
+                logger.info(f"  Total Clusters: {regime_analysis['total_clusters']}")
+                logger.info(f"  Best Regime: {regime_analysis['best_regime']}")
+                
+                logger.info("\nRegime Clusters:")
+                for cluster_id, cluster_data in regime_analysis["clusters"].items():
+                    logger.info(f"  Cluster {cluster_id} ({cluster_data['regime_type']}):")
+                    logger.info(f"    Trades: {cluster_data['trade_count']}")
+                    logger.info(f"    Win Rate: {cluster_data['win_rate']:.1%}")
+                    logger.info(f"    Sharpe Ratio: {cluster_data['sharpe_ratio']:.3f}")
+                    logger.info(f"    Avg Reward: ${cluster_data['avg_reward']:.2f}")
+                    logger.info(f"    Avg Loss: ${cluster_data['avg_loss']:.2f}")
             
             # Display comparison report
             if "comparison_report" in results:
@@ -395,7 +459,7 @@ Examples:
             
             # Display detailed results for each configuration
             for config_name, config_data in results.items():
-                if config_name == "comparison_report":
+                if config_name in ["comparison_report", "regime_analysis"]:
                     continue
                     
                 logger.info(f"\nConfiguration: {config_name}")

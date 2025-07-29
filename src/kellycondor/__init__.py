@@ -16,7 +16,7 @@ from .execution import (
     WindowAwareIBKRTradeExecutor,
     IronCondorOrder,
     run_paper_trade,
-    run_backtest_with_exit_rules
+    run_backtest_with_regime_analysis
 )
 from .entry_windows import (
     EntryWindow,
@@ -48,6 +48,15 @@ from .exit_rules import (
     create_custom_exit_manager,
     create_exit_backtester
 )
+from .regime_analyzer import (
+    RegimeAnalyzer,
+    RegimeAwareSizer,
+    RegimeCluster,
+    RegimeSizingParams,
+    RegimeType,
+    create_regime_analyzer,
+    create_regime_aware_sizer
+)
 
 __all__ = [
     "Processor", 
@@ -60,7 +69,7 @@ __all__ = [
     "WindowAwareIBKRTradeExecutor",
     "IronCondorOrder",
     "run_paper_trade",
-    "run_backtest_with_exit_rules",
+    "run_backtest_with_regime_analysis",
     "EntryWindow",
     "EntryWindowManager", 
     "WindowAwareProcessor",
@@ -84,5 +93,12 @@ __all__ = [
     "ExitRuleBacktester",
     "create_default_exit_manager",
     "create_custom_exit_manager",
-    "create_exit_backtester"
+    "create_exit_backtester",
+    "RegimeAnalyzer",
+    "RegimeAwareSizer",
+    "RegimeCluster",
+    "RegimeSizingParams",
+    "RegimeType",
+    "create_regime_analyzer",
+    "create_regime_aware_sizer"
 ] 
