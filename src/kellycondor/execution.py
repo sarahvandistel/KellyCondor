@@ -4,6 +4,8 @@ Live execution layer for KellyCondor paper trading through IBKR.
 
 import time
 import logging
+import redis
+import json
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -69,6 +71,18 @@ class IBKRClient(EWrapper, EClient):
                 self.orders[orderId].fill_price = avgFillPrice
                 self.orders[orderId].timestamp = datetime.now()
             logging.info(f"Order {orderId} status: {status}, filled: {filled}, price: {avgFillPrice}")
+            
+            # Update Redis if we have a Redis client
+            try:
+                redis_client = redis.Redis(host='localhost', port=6379, db=0)
+                trade_key = f"trade:{orderId}"
+                if redis_client.exists(trade_key):
+                    redis_client.hset(trade_key, 'status', status)
+                    if status == "Filled":
+                        redis_client.hset(trade_key, 'fill_price', str(avgFillPrice))
+                        redis_client.hset(trade_key, 'filled_quantity', str(filled))
+            except Exception as e:
+                logging.error(f"Failed to update Redis for order {orderId}: {e}")
     
     def position(self, account: str, contract: Contract, position: float, avgCost: float):
         """Callback for position updates."""
@@ -171,6 +185,7 @@ class IBKRTradeExecutor:
         self.sizer = sizer
         self.active_orders = {}
         self.trade_history = []
+        self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
         
     def submit_iron_condor(self, symbol: str = "SPX", expiry: str = None) -> Optional[IronCondorOrder]:
         """Submit an iron condor order based on current market conditions."""
@@ -188,8 +203,39 @@ class IBKRTradeExecutor:
         success = self._submit_order(order)
         if success:
             self.active_orders[order.order_id] = order
+            self._log_trade_to_redis(order)
             return order
         return None
+    
+    def _log_trade_to_redis(self, order: IronCondorOrder):
+        """Log trade details to Redis for monitoring."""
+        try:
+            trade_data = {
+                'order_id': order.order_id,
+                'symbol': order.symbol,
+                'expiry': order.expiry,
+                'call_strike': order.call_strike,
+                'put_strike': order.put_strike,
+                'call_spread': order.call_spread,
+                'put_spread': order.put_spread,
+                'quantity': order.quantity,
+                'status': order.status,
+                'timestamp': datetime.now().isoformat(),
+                'type': 'IRON_CONDOR'
+            }
+            
+            # Save to Redis
+            trade_key = f"trade:{order.order_id}"
+            self.redis_client.hmset(trade_key, trade_data)
+            
+            # Also save as position
+            position_key = f"position:{order.symbol}_{order.order_id}"
+            self.redis_client.hmset(position_key, trade_data)
+            
+            logging.info(f"Logged trade to Redis: {trade_key}")
+            
+        except Exception as e:
+            logging.error(f"Failed to log trade to Redis: {e}")
     
     def _create_iron_condor_order(self, symbol: str, expiry: str, sizing: Dict[str, float]) -> IronCondorOrder:
         """Create an iron condor order based on current market conditions."""
