@@ -75,6 +75,7 @@ KellyCondor supports live paper trading through Interactive Brokers. Here's how 
    - In TWS: File → Global Configuration → API → Settings
    - Enable "Enable ActiveX and Socket Clients"
    - Add your IP to "Trusted IPs" or check "Allow connections from localhost"
+   - Set Socket Port to 7497 for paper trading
 
 #### Running Paper Trading
 
@@ -83,7 +84,7 @@ KellyCondor supports live paper trading through Interactive Brokers. Here's how 
 kelly-live --paper
 
 # Custom configuration
-kelly-live --paper --host 127.0.0.1 --port 7496 --account-size 50000
+kelly-live --paper --host 127.0.0.1 --port 7497 --account-size 50000
 
 # Simulation mode (no IBKR connection)
 kelly-live --simulate
@@ -96,7 +97,7 @@ kelly-live --paper --verbose
 
 1. **Launch TWS in Paper Mode**
    ```bash
-   # TWS should be running on port 7496 for paper trading
+   # TWS should be running on port 7497 for paper trading
    # Make sure API connections are enabled
    ```
 
@@ -122,7 +123,7 @@ kelly-live --paper --verbose
 - `--paper`: Enable paper trading mode
 - `--simulate`: Run in simulation mode (no orders)
 - `--host`: IBKR host (default: 127.0.0.1)
-- `--port`: IBKR port (7496=paper, 7497=live)
+- `--port`: IBKR port (7497=paper, 7496=live)
 - `--account-size`: Account size for Kelly sizing
 - `--verbose`: Enable detailed logging
 - `--dry-run`: Test without submitting orders

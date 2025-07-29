@@ -51,8 +51,8 @@ Examples:
     parser.add_argument(
         "--port",
         type=int,
-        default=7496,
-        help="IBKR TWS/Gateway port (default: 7496 for paper)"
+        default=7497,
+        help="IBKR TWS/Gateway port (default: 7497 for paper)"
     )
     
     parser.add_argument(
@@ -103,10 +103,10 @@ Examples:
         logger.error("Must specify either --paper or --simulate mode")
         sys.exit(1)
     
-    if args.paper and args.port == 7496:
-        logger.info("Using paper trading port 7496")
-    elif args.paper and args.port == 7497:
-        logger.warning("Using live trading port 7497 - be careful!")
+    if args.paper and args.port == 7497:
+        logger.info("Using paper trading port 7497")
+    elif args.paper and args.port == 7496:
+        logger.warning("Using live trading port 7496 - be careful!")
     
     # Display configuration
     logger.info("KellyCondor Live Trading Configuration:")
@@ -126,17 +126,17 @@ Examples:
                 api_key=args.api_key,
                 host=args.host,
                 port=args.port,
-                client_id=args.client_id
+                client_id=args.client_id,
+                simulation_mode=False
             )
         elif args.simulate:
             logger.info("Starting simulation mode...")
-            # In simulation mode, we'd run without IBKR connection
-            # For now, just run the paper trade function
             run_paper_trade(
                 api_key=args.api_key,
-                host="127.0.0.1",
-                port=9999,  # Invalid port to simulate no connection
-                client_id=args.client_id
+                host=args.host,
+                port=args.port,
+                client_id=args.client_id,
+                simulation_mode=True
             )
         else:
             # This should never happen due to argument validation

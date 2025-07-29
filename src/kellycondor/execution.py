@@ -348,7 +348,7 @@ class DatabentoStream:
         self.running = False
 
 
-def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 7496, client_id: int = 1):
+def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 7497, client_id: int = 1, simulation_mode: bool = False):
     """Main entry point for paper trading."""
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -358,13 +358,17 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
     # Initialize components
     ibkr = IBKRClient()
     
-    # Connect to TWS/IB Gateway
-    try:
-        ibkr.connect_and_run(host, port, client_id)
-        logger.info("Connected to IBKR")
-    except Exception as e:
-        logger.error(f"Failed to connect to IBKR: {e}")
-        return
+    # Connect to TWS/IB Gateway (skip if simulation mode)
+    if not simulation_mode:
+        try:
+            ibkr.connect_and_run(host, port, client_id)
+            logger.info("Connected to IBKR")
+        except Exception as e:
+            logger.error(f"Failed to connect to IBKR: {e}")
+            return
+    else:
+        logger.info("Running in simulation mode - no IBKR connection")
+        ibkr.connected = True  # Mock connection for simulation
     
     # Initialize processor and sizer
     strikes = [4400, 4450, 4500, 4550, 4600]
