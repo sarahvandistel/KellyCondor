@@ -13,8 +13,18 @@ from .execution import (
     LiveIVSkewProcessor, 
     LiveKellySizer, 
     IBKRTradeExecutor,
+    WindowAwareIBKRTradeExecutor,
     IronCondorOrder,
-    run_paper_trade
+    run_paper_trade,
+    run_backtest_with_windows
+)
+from .entry_windows import (
+    EntryWindow,
+    EntryWindowManager,
+    WindowAwareProcessor,
+    WindowAwareSizer,
+    create_default_window_manager,
+    create_custom_window_manager
 )
 
 __all__ = [
@@ -25,6 +35,14 @@ __all__ = [
     "LiveIVSkewProcessor", 
     "LiveKellySizer",
     "IBKRTradeExecutor",
+    "WindowAwareIBKRTradeExecutor",
     "IronCondorOrder",
-    "run_paper_trade"
+    "run_paper_trade",
+    "run_backtest_with_windows",
+    "EntryWindow",
+    "EntryWindowManager", 
+    "WindowAwareProcessor",
+    "WindowAwareSizer",
+    "create_default_window_manager",
+    "create_custom_window_manager"
 ] 

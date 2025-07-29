@@ -6,7 +6,7 @@ import time
 import logging
 import redis
 import json
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -20,6 +20,12 @@ from ibapi.common import TickerId, OrderId
 
 from .processor import Processor
 from .sizer import KellySizer
+from .entry_windows import (
+    EntryWindowManager, 
+    WindowAwareProcessor, 
+    WindowAwareSizer,
+    create_default_window_manager
+)
 
 
 @dataclass
@@ -36,6 +42,7 @@ class IronCondorOrder:
     status: str = "PENDING"
     fill_price: Optional[float] = None
     timestamp: Optional[datetime] = None
+    window_name: Optional[str] = None
 
 
 class IBKRClient(EWrapper, EClient):
@@ -179,22 +186,33 @@ class LiveKellySizer(KellySizer):
 class IBKRTradeExecutor:
     """Executes iron condor trades through IBKR."""
     
-    def __init__(self, client: IBKRClient, processor: LiveIVSkewProcessor, sizer: LiveKellySizer):
+    def __init__(self, client: IBKRClient, processor: Processor, sizer: KellySizer, 
+                 window_manager: EntryWindowManager = None):
         self.client = client
         self.processor = processor
         self.sizer = sizer
+        self.window_manager = window_manager
         self.active_orders = {}
         self.trade_history = []
         self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
         
-    def submit_iron_condor(self, symbol: str = "SPX", expiry: str = None) -> Optional[IronCondorOrder]:
+    def submit_iron_condor(self, symbol: str = "SPX", expiry: str = None, 
+                          window_name: str = None) -> Optional[IronCondorOrder]:
         """Submit an iron condor order based on current market conditions."""
         if not self.client.connected:
             logging.error("IBKR client not connected")
             return None
             
-        # Get current sizing
-        sizing = self.sizer.get_current_sizing()
+        # Get current sizing with window awareness
+        if isinstance(self.sizer, WindowAwareSizer) and window_name:
+            sizing = self.sizer.size_position(
+                self.processor.current_iv_rank,
+                self.processor.current_skew,
+                self.sizer.account_size,
+                window_name
+            )
+        else:
+            sizing = self.sizer.get_current_sizing()
         
         # Create iron condor order
         order = self._create_iron_condor_order(symbol, expiry, sizing)
@@ -203,7 +221,18 @@ class IBKRTradeExecutor:
         success = self._submit_order(order)
         if success:
             self.active_orders[order.order_id] = order
+            
+            # Add window information to order
+            if window_name:
+                order.window_name = window_name
+            
             self._log_trade_to_redis(order)
+            
+            # Record trade in window manager
+            if self.window_manager and window_name:
+                trade_size = sizing.get("position_size", 0)
+                self.window_manager.record_trade(window_name, 0.0, trade_size)  # PnL will be updated later
+            
             return order
         return None
     
@@ -394,8 +423,36 @@ class DatabentoStream:
         self.running = False
 
 
-def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 7497, client_id: int = 1, simulation_mode: bool = False):
-    """Main entry point for paper trading."""
+class WindowAwareIBKRTradeExecutor(IBKRTradeExecutor):
+    """IBKR trade executor with entry window awareness."""
+    
+    def __init__(self, client: IBKRClient, processor: WindowAwareProcessor, 
+                 sizer: WindowAwareSizer, window_manager: EntryWindowManager):
+        super().__init__(client, processor, sizer, window_manager)
+        self.window_processor = processor
+        self.window_sizer = sizer
+        
+    def should_trade_now(self, current_time: datetime = None) -> Tuple[bool, Optional[str]]:
+        """Check if we should trade at the current time."""
+        return self.window_processor.should_trade(current_time)
+    
+    def get_window_performance_summary(self) -> str:
+        """Get a summary of window performance."""
+        if self.window_manager:
+            return self.window_manager.get_window_summary()
+        return "No window manager configured"
+    
+    def get_window_performance_data(self) -> Dict[str, Dict[str, float]]:
+        """Get performance data for all windows."""
+        if self.window_manager:
+            return self.window_manager.get_all_performance()
+        return {}
+
+
+def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 7497, 
+                   client_id: int = 1, simulation_mode: bool = False,
+                   enable_windows: bool = True, window_config: List[Dict[str, any]] = None):
+    """Main entry point for paper trading with optional entry window support."""
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     
@@ -419,7 +476,7 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
     # Initialize processor and sizer
     strikes = [4400, 4450, 4500, 4550, 4600]
     expiries = ["20241220"]
-    proc = LiveIVSkewProcessor(strikes, expiries)
+    base_proc = LiveIVSkewProcessor(strikes, expiries)
     
     # Historical win rates by IV bucket
     win_rate_table = {
@@ -427,10 +484,32 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
         "medium_iv": 0.60,
         "high_iv": 0.55
     }
-    sizer = LiveKellySizer(proc, win_rate_table)
+    base_sizer = LiveKellySizer(base_proc, win_rate_table)
+    
+    # Initialize window manager if enabled
+    window_manager = None
+    processor = base_proc
+    sizer = base_sizer
+    
+    if enable_windows:
+        if window_config:
+            from .entry_windows import create_custom_window_manager
+            window_manager = create_custom_window_manager(window_config)
+        else:
+            window_manager = create_default_window_manager()
+        
+        # Create window-aware processor and sizer
+        processor = WindowAwareProcessor(base_proc, window_manager)
+        sizer = WindowAwareSizer(base_sizer, window_manager)
+        
+        logger.info("Entry window management enabled")
+        logger.info(window_manager.get_window_summary())
     
     # Initialize executor
-    executor = IBKRTradeExecutor(ibkr, proc, sizer)
+    if enable_windows:
+        executor = WindowAwareIBKRTradeExecutor(ibkr, processor, sizer, window_manager)
+    else:
+        executor = IBKRTradeExecutor(ibkr, processor, sizer)
     
     # Initialize data stream
     stream = DatabentoStream(api_key or "demo_key")
@@ -439,16 +518,29 @@ def run_paper_trade(api_key: str = None, host: str = "127.0.0.1", port: int = 74
     
     try:
         for tick in stream.stream_iv_and_skew():
-            proc.process_tick(tick)
+            processor.process_tick(tick)
             
-            # Check if we should submit a trade
-            if _should_submit_trade(proc):
-                order = executor.submit_iron_condor()
-                if order:
-                    logger.info(f"Submitted iron condor order: {order}")
+            # Check if we should submit a trade (with window awareness)
+            if enable_windows:
+                should_trade, window_name = executor.should_trade_now()
+                if should_trade:
+                    order = executor.submit_iron_condor(window_name=window_name)
+                    if order:
+                        logger.info(f"Submitted iron condor order in {window_name} window: {order}")
+            else:
+                # Original logic without windows
+                if _should_submit_trade(processor):
+                    order = executor.submit_iron_condor()
+                    if order:
+                        logger.info(f"Submitted iron condor order: {order}")
             
             # Check for order updates
             _check_order_status(executor)
+            
+            # Log window performance periodically
+            if enable_windows and hasattr(executor, 'get_window_performance_summary'):
+                if int(time.time()) % 300 == 0:  # Every 5 minutes
+                    logger.info(executor.get_window_performance_summary())
             
     except KeyboardInterrupt:
         logger.info("Stopping paper trading session...")
@@ -469,6 +561,90 @@ def _check_order_status(executor: IBKRTradeExecutor):
             logger.info(f"Order {order_id} filled at {order.fill_price}")
             executor.trade_history.append(order)
             del executor.active_orders[order_id]
+
+
+def run_backtest_with_windows(historical_data: pd.DataFrame, 
+                             window_config: List[Dict[str, any]] = None,
+                             account_size: float = 100000) -> Dict[str, any]:
+    """Run backtest with entry window analysis."""
+    from .entry_windows import create_custom_window_manager
+    
+    # Create window manager
+    if window_config:
+        window_manager = create_custom_window_manager(window_config)
+    else:
+        window_manager = create_default_window_manager()
+    
+    # Initialize components for backtesting
+    strikes = [4400, 4450, 4500, 4550, 4600]
+    expiries = ["20241220"]
+    processor = LiveIVSkewProcessor(strikes, expiries)
+    
+    win_rate_table = {
+        "low_iv": 0.65,
+        "medium_iv": 0.60,
+        "high_iv": 0.55
+    }
+    sizer = LiveKellySizer(processor, win_rate_table)
+    
+    # Create window-aware components
+    window_processor = WindowAwareProcessor(processor, window_manager)
+    window_sizer = WindowAwareSizer(sizer, window_manager)
+    
+    # Simulate trading with window awareness
+    trades = []
+    current_time = datetime.now()
+    
+    for _, row in historical_data.iterrows():
+        # Simulate tick data
+        tick_data = {
+            "symbol": "SPX",
+            "strike": row.get("strike", 4500),
+            "expiry": "20241220",
+            "iv": row.get("iv", 0.25),
+            "type": "C",
+            "timestamp": current_time
+        }
+        
+        window_processor.process_tick(tick_data)
+        
+        # Check if we should trade
+        should_trade, window_name = window_processor.should_trade(current_time)
+        
+        if should_trade:
+            # Simulate trade
+            sizing = window_sizer.size_position(
+                processor.current_iv_rank,
+                processor.current_skew,
+                account_size,
+                window_name
+            )
+            
+            trade = {
+                "timestamp": current_time,
+                "window": window_name,
+                "iv_rank": processor.current_iv_rank,
+                "skew": processor.current_skew,
+                "position_size": sizing["position_size"],
+                "pnl": 0.0  # Would be calculated based on exit
+            }
+            
+            trades.append(trade)
+            
+            # Record in window manager
+            window_manager.record_trade(window_name, 0.0, sizing["position_size"])
+        
+        current_time += timedelta(minutes=1)
+    
+    # Calculate window-specific performance
+    window_performance = window_manager.get_all_performance()
+    
+    return {
+        "trades": trades,
+        "window_performance": window_performance,
+        "total_trades": len(trades),
+        "window_summary": window_manager.get_window_summary()
+    }
 
 
 if __name__ == "__main__":

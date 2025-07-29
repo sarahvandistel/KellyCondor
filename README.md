@@ -9,6 +9,7 @@ A sophisticated options trading system that implements the Kelly Criterion for i
 - **Iron Condor Strategy**: Automated strike selection and position sizing
 - **Kelly Criterion**: Dynamic position sizing based on IV rank and volatility skew
 - **Redis Trade Tracking**: Complete trade history and position monitoring
+- **Entry Window Management**: Multiple intraday entry windows with performance tracking
 
 ### 📈 **Real-time Dashboard**
 - **Live Performance Metrics**: Equity curves, PnL distributions, trade history
@@ -19,11 +20,13 @@ A sophisticated options trading system that implements the Kelly Criterion for i
 - **Historical Data**: Databento integration for market data
 - **Strategy Validation**: Comprehensive backtesting with performance metrics
 - **Risk Analysis**: Drawdown analysis and statistical validation
+- **Window Analysis**: Backtesting with entry window performance tracking
 
 ### 🛠️ **Monitoring & Management**
 - **Trade Monitor**: Real-time trade tracking and status updates
 - **System Status**: Process monitoring and health checks
 - **Redis Integration**: Persistent trade data and position tracking
+- **Window Monitor**: Entry window performance monitoring and recommendations
 
 ## 🚀 Quick Start
 
@@ -56,8 +59,14 @@ pip install -e .
 # Start TWS in paper trading mode (port 7497)
 # Enable API connections in TWS settings
 
-# Start live trading
-kelly-live --paper --verbose
+# Start live trading with default entry windows
+kelly-live --paper --enable-windows
+
+# Start live trading with custom window configuration
+kelly-live --paper --enable-windows --window-config sample_windows.json
+
+# Monitor entry window performance
+python monitor_windows.py
 
 # Monitor trades
 python monitor_trades.py
@@ -74,6 +83,15 @@ python dashboard/app.py
 # Access at: http://localhost:8050
 ```
 
+### Backtesting with Entry Windows
+```bash
+# Run backtest with entry window analysis
+kelly-live --backtest --enable-windows --data-file historical_data.csv
+
+# Run backtest with custom windows and save results
+kelly-live --backtest --enable-windows --window-config custom_windows.json --data-file data.csv --output-file results.json
+```
+
 ## 📁 Project Structure
 
 ```
@@ -83,6 +101,7 @@ KellyCondor/
 │   ├── processor.py         # Market data processing
 │   ├── sizer.py            # Kelly criterion sizing
 │   ├── execution.py        # Live IBKR trading
+│   ├── entry_windows.py    # Entry window management
 │   ├── replay.py           # Backtesting engine
 │   └── cli.py              # Command line interface
 ├── dashboard/
@@ -90,12 +109,15 @@ KellyCondor/
 ├── tests/
 │   ├── test_processor.py   # Unit tests
 │   ├── test_sizer.py       # Unit tests
-│   └── test_execution.py   # Unit tests
+│   ├── test_execution.py   # Unit tests
+│   └── test_entry_windows.py # Entry window tests
 ├── scripts/
 │   └── kelly_replay.py     # Backtesting script
 ├── monitor_trades.py        # Trade monitoring
+├── monitor_windows.py       # Entry window monitoring
 ├── simple_trade_monitor.py  # System status
 ├── force_trade.py          # Test trade submission
+├── sample_windows.json     # Sample window configuration
 └── README.md               # This file
 ```
 
@@ -114,6 +136,12 @@ KellyCondor/
 - **Strike Selection**: ±50 from current price
 - **Spread Width**: 25 points
 
+### Entry Windows
+- **Morning**: 9:30-10:30 AM ET
+- **Mid-Morning**: 11:00-12:00 PM ET
+- **Afternoon**: 2:00-3:00 PM ET
+- **Close**: 3:30-4:00 PM ET
+
 ## 📊 Monitoring Tools
 
 ### Trade Monitor
@@ -125,6 +153,16 @@ Shows:
 - Trade history summary
 - PnL statistics
 - Recent trades
+
+### Entry Window Monitor
+```bash
+python monitor_windows.py
+```
+Shows:
+- Current window status (Active/Expired/Upcoming)
+- Window-specific performance metrics
+- Trade recommendations per window
+- Historical performance analysis
 
 ### System Status
 ```bash
@@ -149,6 +187,11 @@ Forces a trade submission for testing Redis logging.
 pytest tests/
 ```
 
+### Entry Window Tests
+```bash
+pytest tests/test_entry_windows.py -v
+```
+
 ### Integration Tests
 ```bash
 # Test IBKR connection
@@ -156,6 +199,9 @@ kelly-live --simulate --verbose
 
 # Test trade submission
 python force_trade.py
+
+# Test entry windows
+kelly-live --simulate --enable-windows --verbose
 ```
 
 ## 📈 Strategy Details
@@ -165,6 +211,7 @@ The system uses the Kelly Criterion for position sizing:
 - **Win Rate**: Based on historical IV rank buckets
 - **Risk Management**: Maximum position size limits
 - **Dynamic Sizing**: Adjusts based on current market conditions
+- **Window Adjustments**: Position sizes adjusted based on entry window performance
 
 ### Iron Condor Strategy
 - **Call Spread**: Sell call + Buy higher call
@@ -172,10 +219,17 @@ The system uses the Kelly Criterion for position sizing:
 - **Strike Selection**: Based on current SPX price
 - **Expiry**: Monthly options (typically 30-45 DTE)
 
+### Entry Window Strategy
+- **Multiple Windows**: Trade only during specific time windows
+- **Performance Tracking**: Monitor win rates and PnL per window
+- **Dynamic Adjustments**: Reduce position sizes for underperforming windows
+- **Time-based Filtering**: Avoid trading during low-probability periods
+
 ### Market Data Processing
 - **IV Rank**: Historical percentile of current IV
 - **Volatility Skew**: Difference between call and put IV
 - **Real-time Updates**: Continuous market data processing
+- **Window Awareness**: Process data with entry window context
 
 ## 🔒 Security & Risk
 
@@ -190,6 +244,7 @@ The system uses the Kelly Criterion for position sizing:
 - Maximum drawdown controls
 - Stop-loss mechanisms
 - Diversification across expiries
+- Entry window performance monitoring
 
 ## 🤝 Contributing
 
@@ -224,6 +279,16 @@ sudo systemctl start redis-server
 ```bash
 # Check if dashboard is running
 python simple_trade_monitor.py
+```
+
+**Entry Windows Not Working**
+```bash
+# Check timezone settings
+# Ensure pytz is installed
+pip install pytz
+
+# Verify window configuration
+cat sample_windows.json
 ```
 
 ## 📞 Support
